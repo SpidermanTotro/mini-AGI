@@ -313,6 +313,12 @@ class FileReader:
         That factor is the difference between an evaluation that runs between
         samples and one that costs more than the training it is measuring.
         """
+        # Evaluation must never forward more positions than the model's
+        # configured context/rotary table can represent.  This matters when a
+        # caller deliberately uses a training chunk larger than context.
+        n = min(n, self.context, len(self.data) - self.pos - 1)
+        if n < 2:
+            return None
         if self.caches is None or self.seen + n > self.context:
             self.caches = self.model.empty_caches()
             self.seen = 0
