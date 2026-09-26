@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 
-from minagi.history import truncate_history
+from minagi.history import append_jsonl, truncate_history
 
 
 class TruncateHistoryTests(unittest.TestCase):
@@ -51,6 +51,28 @@ class TruncateHistoryTests(unittest.TestCase):
             self.assertEqual(truncate_history(path, 0), 0)
             with open(path) as f:
                 self.assertEqual(f.read(), '{"chars": 300}\n')
+
+
+class AppendJsonlTests(unittest.TestCase):
+    def test_appends_rows_and_creates_parent_directory(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "nested", "history.jsonl")
+            append_jsonl(path, {"step": 1, "chars": 100})
+            append_jsonl(path, {"step": 2, "chars": 200})
+
+            with open(path) as f:
+                rows = [json.loads(line) for line in f]
+            self.assertEqual(rows, [
+                {"step": 1, "chars": 100},
+                {"step": 2, "chars": 200},
+            ])
+
+    def test_compact_output_is_one_json_object_per_line(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "history.jsonl")
+            append_jsonl(path, {"step": 1, "chars": 100}, compact=True)
+            with open(path) as f:
+                self.assertEqual(f.read(), '{"step":1,"chars":100}\n')
 
 
 if __name__ == "__main__":
