@@ -79,7 +79,7 @@ The core checks need no corpus or trained weights:
 
 ```bash
 python -m unittest discover -s tests -v
-python -m compileall -q minagi tests
+python -m compileall -q minagi corpora mini_agent tests
 ```
 
 ## Rebuild From Zero
@@ -216,13 +216,19 @@ code checkout, not the downloaded data or trained model.
 - The added tests cover core model behavior, but not paged save/resume,
   optimizer restoration, expert growth/pruning, context ramping, corpus
   downloads, or HTTP serving end to end.
-- There is no CI workflow, automated CUDA/memory stress job, or declared
-  package/build metadata. The project is run from its repository root.
+- `.github/workflows/tests.yml` runs the unit suite and syntax compilation on
+   pushes and pull requests, using CPU-only PyTorch. There is still no automated
+   CUDA/memory stress job or declared package/build metadata; the project is
+   run from its repository root.
 - `train.py` is a large orchestration module. Splitting its CLI, training
   loops, and evaluation into independently tested components would make
   future changes easier to isolate.
 - Loading legacy `.pt` checkpoints uses PyTorch deserialization with
   `weights_only=False`; only load checkpoint files you trust.
-- This environment's validation used CPU-only PyTorch. It does not establish
-  that the documented 8-GB GPU workload fits or that long-run training is
-  stable.
+- The language model is text-only. Image generation is delegated to an optional
+   local diffusion server; no vision, audio, or image decoder is trained here.
+- The prompt evaluator is a smoke probe, not a broad standardized coding,
+   reasoning, or agent benchmark and does not establish AGI-level capability.
+- Local and CI validation use CPU-only PyTorch. They do not establish that the
+   expanded 16-GB profile fits a particular GPU or that long-run training is
+   stable.
