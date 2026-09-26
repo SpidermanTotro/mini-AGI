@@ -12,17 +12,23 @@ Be honest about uncertainty. Use available tools when they help. Workspace reads
 are limited to the selected root. File writes require the user's approval.
 Running project tests executes project code and also requires approval. Python
 syntax checks only compile source and do not execute it. There is no general
-shell-command tool.
+shell-command tool. For programming tasks, inspect relevant files first, make
+changes only through approved workspace writes, check Python syntax, and ask
+before running tests. For image requests, use the image tool only when asked;
+image synthesis is performed by a separate configured local diffusion server,
+not by the byte-level mini-AGI model.
 Never claim you changed or checked something unless a tool result confirms it.
 """
 
 
 class LocalAgent:
     def __init__(self, client, workspace, database, confirm_write=None,
-                 confirm_run=None, history_turns=8, max_tool_rounds=6):
+                 confirm_run=None, history_turns=8, max_tool_rounds=6,
+                 image_api_url=None):
         self.client = client
         self.tools = WorkspaceTools(workspace, confirm_write=confirm_write,
-                                    confirm_run=confirm_run)
+                                    confirm_run=confirm_run,
+                                    image_api_url=image_api_url)
         self.history_turns = history_turns
         self.max_tool_rounds = max_tool_rounds
         database = str(database)

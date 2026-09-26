@@ -33,9 +33,11 @@ The execution path is:
 9. `mini_agent/` is a separate local assistant. It calls Ollama over localhost,
    keeps conversation history in SQLite, and exposes bounded workspace tools.
    It is not the model trained by `train.py`.
-10. `config-16gb.yaml` and `train-16gb.sh` provide a same-shape profile and
-   monitored training helper for a 16-GB NVIDIA GPU / 32-GB RAM host. The
-   helper records a prompt-evaluation report after each successful run.
+10. `config-16gb.yaml` and `train-16gb.sh` provide an approximately 924M
+   parameter starting profile and monitored training helper for a 16-GB NVIDIA
+   GPU / 32-GB RAM host. It uses a wider architecture than `config.yaml` and
+   requires its own fresh weights directory. The helper records a prompt-
+   evaluation report after each successful run.
 11. `minagi/evaluate.py` records repeatable generation probes from saved
    checkpoints so training changes can be compared on the same prompts.
 
@@ -105,20 +107,20 @@ python -m compileall -q minagi tests
    Use `python train.py --help` for the full set of training controls. Check
    the device, context, chunk size, and available disk before a long run.
 
-      For the 16-GB VRAM / 32-GB RAM starting settings, select the included
-      same-architecture profile in the training process. This starts fresh weights
-      at `agi-16`; to resume compatible default-shape weights, pass their
-      existing directory with `--weights-dir` instead:
+      For the larger 16-GB VRAM / 32-GB RAM profile, use its separate weights
+      directory. Its 768-wide trunk and 3072-wide experts are not compatible
+      with default or older 16-GB-profile checkpoints:
 
       ```bash
       MINI_AGI_CONFIG=config-16gb.yaml python train.py read data/train \
-            --weights-dir agi-16 --held-out data/val --save --minutes 1
+         --weights-dir agi-16-large --held-out data/val --save --minutes 1
       ```
 
-      The profile starts with 56 resident experts, a 192-expert RAM cache, and a
-      4096-character context. Watch GPU/RAM/disk usage; tune resident experts in
-      increments of 8 before changing model widths. The GPU profile is a starting
-      estimate, not hardware validation.
+      The profile starts near 924M parameters, with 64 resident experts, a
+      128-expert RAM cache, and a 4096-character context. `SMOKE_MINUTES=0
+      PASSES=2 ./train-16gb.sh` removes the time limit and runs two full passes.
+      Watch GPU/RAM/disk usage; tune resident experts in increments of 8. The
+      memory numbers are estimates, not hardware validation.
 
 3. **Serve the trained model.** The server loads from `weights` by default.
 
@@ -142,6 +144,14 @@ ollama pull qwen3:8b
 python -m mini_agent --workspace . --model qwen3:8b
 ```
 
+For coding tasks, the assistant can inspect files, request approval for edits,
+check Python syntax, and request approval before running the project's tests.
+For image generation, start a local AUTOMATIC1111/Forge server with its API
+enabled, then set `MINI_AGENT_IMAGE_API=http://127.0.0.1:7860` or pass
+`--image-api-url http://127.0.0.1:7860`. The assistant saves an approved PNG
+inside the workspace through that separate diffusion model; the byte-level
+model trained by this repository is text-only.
+
 Use `/exit` to leave the CLI and `/reset` to clear the active conversation.
 History stays in `~/.local/share/mini-agi/agent.sqlite3` unless
 `--database` or `MINI_AGENT_DB` selects another path. Workspace reads, search,
@@ -156,8 +166,8 @@ After the first saved checkpoint, run the same prompt set again after further
 training. This saves the model step and exact generated continuations:
 
 ```bash
-python -m minagi.evaluate --weights agi-16 \
-   --output runs/agi-16-baseline.json
+python -m minagi.evaluate --weights agi-16-large \
+   --output runs/agi-16-large-baseline.json
 ```
 
 Use a new output filename for later snapshots, then compare the responses.
@@ -172,9 +182,9 @@ Install the `zip` utility if it is missing. Run this from the repository root
 to create a source-only archive:
 
 ```bash
-zip -r mini-AGI-rebuild.zip \
+zip -r -FS mini-AGI-rebuild.zip \
    README.md REBUILD.md LICENSE requirements.txt requirements-optional.txt \
-   .gitignore config.yaml config-16gb.yaml train-16gb.sh train.py serve.py mini_agent minagi \
+   .gitignore .github config.yaml config-16gb.yaml train-16gb.sh train.py serve.py mini_agent minagi \
    corpora replication assets tests \
   -x '*/__pycache__/*' '*.pyc'
 ```

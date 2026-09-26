@@ -4,8 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 PYTHON="${PYTHON:-python3}"
-WEIGHTS_DIR="${WEIGHTS_DIR:-agi-16}"
+WEIGHTS_DIR="${WEIGHTS_DIR:-agi-16-large}"
 SMOKE_MINUTES="${SMOKE_MINUTES:-1}"
+PASSES="${PASSES:-1}"
 VENV="$ROOT/.venv"
 
 [[ -x "$VENV/bin/python" ]] || "$PYTHON" -m venv "$VENV"
@@ -24,10 +25,10 @@ free -h
 df -h "$ROOT"
 export MINI_AGI_CONFIG="$ROOT/config-16gb.yaml"
 mkdir -p runs
-LOG="$ROOT/runs/train-agi-16.log"
+LOG="$ROOT/runs/train-agi-16-large.log"
 echo "Weights: $WEIGHTS_DIR (existing manifest resumes; use a new directory for fresh weights)"
 python -u train.py read data/train --weights-dir "$WEIGHTS_DIR" --held-out data/val \
-  --save --minutes "$SMOKE_MINUTES" >"$LOG" 2>&1 &
+  --save --passes "$PASSES" --minutes "$SMOKE_MINUTES" >"$LOG" 2>&1 &
 TRAIN_PID=$!
 while kill -0 "$TRAIN_PID" 2>/dev/null; do
   date '+%H:%M:%S'

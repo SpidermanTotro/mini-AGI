@@ -16,12 +16,15 @@ class ConfigProfileTests(unittest.TestCase):
         with patch.dict(os.environ, {"MINI_AGI_CONFIG": str(PROFILE)}):
             settings = load()
 
-        self.assertEqual(get(settings, "model.d_model"), 512)
-        self.assertEqual(get(settings, "pool.width"), 2048)
-        self.assertEqual(get(settings, "pool.resident"), 56)
-        self.assertEqual(get(settings, "pool.ram_cache"), 192)
+        self.assertEqual(get(settings, "model.d_model"), 768)
+        self.assertEqual(get(settings, "model.n_head"), 12)
+        self.assertEqual(get(settings, "model.d_ff"), 2048)
+        self.assertEqual(get(settings, "pool.experts"), 128)
+        self.assertEqual(get(settings, "pool.width"), 3072)
+        self.assertEqual(get(settings, "pool.resident"), 64)
+        self.assertEqual(get(settings, "pool.ram_cache"), 128)
         self.assertEqual(get(settings, "model.context_end"), 4096)
-        self.assertEqual(get(settings, "data.weights"), "agi-16")
+        self.assertEqual(get(settings, "data.weights"), "agi-16-large")
         cfg = RecurConfig(
             vocab_size=265,
             d_model=settings["model"]["d_model"],
@@ -41,6 +44,13 @@ class ConfigProfileTests(unittest.TestCase):
         )
         self.assertEqual(cfg.d_model // cfg.n_head, 64)
         self.assertEqual(cfg.n_layer_effective, 26)
+        expert_params = 3 * cfg.d_model * cfg.pool_d_ff
+        resident_state_gib = (
+            get(settings, "pool.resident") * expert_params * 16 / 1024**3)
+        ram_cache_gib = (
+            get(settings, "pool.ram_cache") * expert_params * 12 / 1024**3)
+        self.assertLess(resident_state_gib, 8.0)
+        self.assertLess(ram_cache_gib, 11.0)
 
     def test_default_profile_remains_unchanged_without_override(self):
         with patch.dict(os.environ, {"MINI_AGI_CONFIG": ""}):

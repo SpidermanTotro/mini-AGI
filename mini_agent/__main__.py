@@ -27,6 +27,11 @@ def main():
     parser.add_argument("--model", default=os.environ.get("OLLAMA_MODEL", "qwen3:8b"))
     parser.add_argument("--url", default=os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434"))
     parser.add_argument(
+        "--image-api-url",
+        default=os.environ.get("MINI_AGENT_IMAGE_API"),
+        help="optional local Stable Diffusion WebUI/Forge base URL, e.g. http://127.0.0.1:7860",
+    )
+    parser.add_argument(
         "--database",
         default=os.environ.get("MINI_AGENT_DB", "~/.local/share/mini-agi/agent.sqlite3"),
         help="SQLite conversation history path",
@@ -45,6 +50,7 @@ def main():
         database=args.database,
         confirm_write=approve_write,
         confirm_run=approve_test_run,
+        image_api_url=args.image_api_url,
     )
     if args.reset:
         agent.reset(args.conversation)

@@ -1,3 +1,6 @@
+import base64
+import io
+import json
 import tempfile
 import subprocess
 import unittest
@@ -47,6 +50,63 @@ class LocalAgentTests(unittest.TestCase):
             result = allowed.call("write_file", {"path": "new.txt", "content": "yes"})
             self.assertIn("Wrote new.txt", result)
             self.assertEqual((root_path / "new.txt").read_text(encoding="utf-8"), "yes")
+
+    def test_image_generation_is_local_and_requires_approval(self):
+        with tempfile.TemporaryDirectory() as root:
+            unconfigured = WorkspaceTools(root)
+            self.assertIn("not configured", unconfigured.call(
+                "generate_image", {"prompt": "A red fox"}))
+            with self.assertRaises(ValueError):
+                WorkspaceTools(root, image_api_url="http://example.com")
+
+            denied = WorkspaceTools(root, image_api_url="http://127.0.0.1:7860")
+            with patch("mini_agent.tools.urlopen") as open_api:
+                result = denied.call("generate_image", {"prompt": "A red fox"})
+            self.assertIn("denied", result)
+            open_api.assert_not_called()
+
+    def test_image_generation_saves_validated_png_inside_workspace(self):
+        png = b"\x89PNG\r\n\x1a\nimage-data"
+        response = json.dumps({
+            "images": [base64.b64encode(png).decode("ascii")],
+        }).encode("utf-8")
+        with tempfile.TemporaryDirectory() as root:
+            tools = WorkspaceTools(
+                root,
+                confirm_write=lambda path, exists: path == "generated/red-fox.png" and not exists,
+                image_api_url="http://127.0.0.1:7860",
+            )
+            with patch("mini_agent.tools.urlopen", return_value=io.BytesIO(response)) as open_api:
+                result = tools.call("generate_image", {
+                    "prompt": "A red fox",
+                    "output": "generated/red-fox.png",
+                    "width": 256,
+                    "height": 384,
+                    "steps": 12,
+                })
+            self.assertIn("Saved generated image", result)
+            output = Path(root) / "generated" / "red-fox.png"
+            self.assertEqual(output.read_bytes(), png)
+            request = open_api.call_args.args[0]
+            self.assertEqual(request.full_url,
+                             "http://127.0.0.1:7860/sdapi/v1/txt2img")
+            payload = json.loads(request.data)
+            self.assertEqual(payload["prompt"], "A red fox")
+            self.assertEqual(payload["width"], 256)
+            self.assertEqual(payload["height"], 384)
+            self.assertEqual(payload["steps"], 12)
+
+    def test_image_generation_rejects_unsafe_arguments(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools = WorkspaceTools(root, image_api_url="http://localhost:7860")
+            self.assertIn("multiple of 8", tools.call("generate_image", {
+                "prompt": "A red fox", "width": 257,
+            }))
+            self.assertIn("path must stay inside", tools.call("generate_image", {
+                "prompt": "A red fox", "output": "../outside.png",
+            }))
+            with self.assertRaises(ValueError):
+                WorkspaceTools(root, image_api_url="http://127.0.0.1:bad")
 
     def test_python_syntax_check_does_not_execute_source(self):
         with tempfile.TemporaryDirectory() as root:

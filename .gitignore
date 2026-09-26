@@ -6,6 +6,7 @@ weights/*
 !weights/manifest.json
 weights-*/
 agi-16/
+agi-16-large/
 
 # Run artefacts: logs, checkpoints, plots
 runs/*
