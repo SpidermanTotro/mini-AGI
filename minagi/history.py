@@ -40,3 +40,31 @@ def append_jsonl(path, row, *, compact=False):
     separators = (",", ":") if compact else None
     with open(path, "a") as f:
         f.write(json.dumps(row, separators=separators) + "\n")
+
+
+class JsonlRecorder:
+    """Line-buffered JSONL recorder whose file is always explicitly closable."""
+
+    def __init__(self, path):
+        self.path = path
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self._file = open(path, "a", buffering=1)
+
+    def record(self, kind, step=None, **fields):
+        self._file.write(
+            json.dumps({"kind": kind, "step": step, **fields}) + "\n"
+        )
+
+    def close(self):
+        self._file.close()
+
+    @property
+    def closed(self):
+        return self._file.closed
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False

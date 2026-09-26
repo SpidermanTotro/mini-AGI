@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 
-from minagi.history import append_jsonl, truncate_history
+from minagi.history import JsonlRecorder, append_jsonl, truncate_history
 
 
 class TruncateHistoryTests(unittest.TestCase):
@@ -73,6 +73,33 @@ class AppendJsonlTests(unittest.TestCase):
             append_jsonl(path, {"step": 1, "chars": 100}, compact=True)
             with open(path) as f:
                 self.assertEqual(f.read(), '{"step":1,"chars":100}\n')
+
+
+class JsonlRecorderTests(unittest.TestCase):
+    def test_records_line_buffered_events_and_closes_normally(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "run", "history.jsonl")
+            with JsonlRecorder(path) as recorder:
+                recorder.record("start", step=3, experts=8)
+                with open(path) as f:
+                    row = json.loads(f.readline())
+                self.assertEqual(row, {
+                    "kind": "start", "step": 3, "experts": 8,
+                })
+                self.assertFalse(recorder.closed)
+            self.assertTrue(recorder.closed)
+
+    def test_closes_when_context_exits_with_exception(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "history.jsonl")
+            recorder = JsonlRecorder(path)
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                with recorder:
+                    recorder.record("step", step=4, loss=1.25)
+                    raise RuntimeError("stop")
+            self.assertTrue(recorder.closed)
+            with open(path) as f:
+                self.assertEqual(json.loads(f.readline())["step"], 4)
 
 
 if __name__ == "__main__":
