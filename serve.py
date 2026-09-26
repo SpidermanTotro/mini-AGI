@@ -234,6 +234,21 @@ def build_prompt(messages, budget, prime=""):
     return prompt[-budget:] if len(prompt) > budget else prompt
 
 
+def _prefill_cache(model, tokens, chunk=512):
+    """Encode one self-contained window and return its cache and last logits."""
+    if tokens.shape[1] > model.cfg.block:
+        raise ValueError("prefill exceeds the model context")
+    caches = model.empty_caches()
+    logits = None
+    offset = 0
+    chunk = max(1, int(chunk))
+    for i in range(0, tokens.shape[1], chunk):
+        part = tokens[:, i:i + chunk]
+        logits = model(part, caches=caches, pos_offset=offset)[0]
+        offset += part.shape[1]
+    return caches, logits, offset
+
+
 @torch.no_grad()
 def stream(prompt, max_new):
     from minagi.config import get as _g, load as _lc
@@ -246,18 +261,6 @@ def stream(prompt, max_new):
     # after a hundred characters is not what the prompt alone asked for, and
     # it is a far shorter span than pool.segment_chars, which is for reading.
     reselect = _g(c, "pool.reselect_chars", 64)
-
-    def rebuild_recent(history, caches):
-        """Rebase retained history onto fresh rotary positions.
-
-        Dropping keys from the left does not renumber the rotary positions
-        already encoded into the retained keys.  When the table fills, rebuild
-        a recent half-window from position zero, matching RecurCoder.generate.
-        """
-        recent = history[:, -max(1, model.cfg.block // 2):]
-        fresh = model.empty_caches()
-        logits = model(recent, caches=fresh, pos_offset=0)[0]
-        return fresh, recent.shape[1], logits
 
     model, tok = STATE["model"], STATE["tok"]
     device = next(model.parameters()).device
@@ -277,21 +280,12 @@ def stream(prompt, max_new):
     # returned byte-identical working sets. peek_experts reads the prompt once
     # and scores on its own states.
     model.peek_experts(out, free=True)
-    caches = model.empty_caches()
-    offset = 0
 
     # Prefill in chunks, the way training reads a corpus. Feeding a long
     # prompt in one pass materialises activations for every position across
     # every block application at once, which is what puts a long context out
     # of reach; the cache carries the reach instead.
-    CHUNK = 512
-    logits = None
-    for i in range(0, out.shape[1], CHUNK):
-        part = out[:, i:i + CHUNK]
-        if offset + part.shape[1] > model.cfg.block:
-            caches, offset, logits = rebuild_recent(out[:, :i], caches)
-        logits = model(part, caches=caches, pos_offset=offset)[0]
-        offset += part.shape[1]
+    caches, logits, offset = _prefill_cache(model, out)
 
     cur = out[:, -1:]
     produced = []
@@ -325,9 +319,19 @@ def stream(prompt, max_new):
                                 "pool": resident_experts()}}
         if logits is None:
             if offset + cur.shape[1] > model.cfg.block:
-                caches, offset, logits = rebuild_recent(out[:, :-1], caches)
-            logits = model(cur, caches=caches, pos_offset=offset)[0]
-            offset += cur.shape[1]
+                # Cached keys have already been rotated at their old positions.
+                # Trimming them and deriving a new offset from the shorter cache
+                # reuses positions and corrupts every relative distance. Start
+                # a self-contained recent window instead, as RecurCoder.generate
+                # does, leaving half the context free before the next rebuild.
+                keep = max(1, model.cfg.block // 2)
+                recent = out[:, -keep:]
+                del caches                 # let the replacement reuse its VRAM
+                caches, logits, offset = _prefill_cache(
+                    model, recent)
+            else:
+                logits = model(cur, caches=caches, pos_offset=offset)[0]
+                offset += cur.shape[1]
         nxt = pick_next(logits[:, -1, :].float(), out, temperature=0.0,
                         adapt_strength=strength, adapt_decay=decay)
         out = torch.cat([out, nxt], dim=1)
