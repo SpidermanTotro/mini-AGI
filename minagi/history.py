@@ -32,3 +32,11 @@ def truncate_history(path, chars):
             f.write("\n".join(keep) + ("\n" if keep else ""))
 
     return dropped
+
+
+def append_jsonl(path, row, *, compact=False):
+    """Append one JSON object as one line, creating its parent directory."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    separators = (",", ":") if compact else None
+    with open(path, "a") as f:
+        f.write(json.dumps(row, separators=separators) + "\n")
