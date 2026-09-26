@@ -32,3 +32,21 @@ runs/corpus_index.json
 # secrets
 .env
 .env.*
+
+# Local Python environments and packaging/test artefacts
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Common editor / OS metadata
+.vscode/
+.idea/
+.DS_Store
