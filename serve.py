@@ -238,7 +238,6 @@ def build_prompt(messages, budget, prime=""):
 def stream(prompt, max_new):
     from minagi.config import get as _g, load as _lc
     from minagi.decode import pick_next
-    from minagi.stream import trim_caches
 
     c = _lc()
     strength = _g(c, "decoding.adapt_strength", 2.5)
@@ -248,21 +247,17 @@ def stream(prompt, max_new):
     # it is a far shorter span than pool.segment_chars, which is for reading.
     reselect = _g(c, "pool.reselect_chars", 64)
 
-    def where(caches):
-        """
-        The position the next character sits at: however much history the
-        cache still holds after trimming.
+    def rebuild_recent(history, caches):
+        """Rebase retained history onto fresh rotary positions.
 
-        NOT a running count. Rotary tables are built for positions 0 to
-        block-1, so a counter that saturates at `block` asks for position
-        `block` on the very next character and the model refuses. Reading it
-        back off the cache cannot drift, because the cache is the thing the
-        positions have to agree with.
+        Dropping keys from the left does not renumber the rotary positions
+        already encoded into the retained keys.  When the table fills, rebuild
+        a recent half-window from position zero, matching RecurCoder.generate.
         """
-        for c in caches:
-            if c.get("k") is not None:
-                return c["k"].shape[-2]
-        return 0
+        recent = history[:, -max(1, model.cfg.block // 2):]
+        fresh = model.empty_caches()
+        logits = model(recent, caches=fresh, pos_offset=0)[0]
+        return fresh, recent.shape[1], logits
 
     model, tok = STATE["model"], STATE["tok"]
     device = next(model.parameters()).device
@@ -283,6 +278,7 @@ def stream(prompt, max_new):
     # and scores on its own states.
     model.peek_experts(out, free=True)
     caches = model.empty_caches()
+    offset = 0
 
     # Prefill in chunks, the way training reads a corpus. Feeding a long
     # prompt in one pass materialises activations for every position across
@@ -292,8 +288,10 @@ def stream(prompt, max_new):
     logits = None
     for i in range(0, out.shape[1], CHUNK):
         part = out[:, i:i + CHUNK]
-        trim_caches(caches, model.cfg.block - part.shape[1])
-        logits = model(part, caches=caches, pos_offset=where(caches))[0]
+        if offset + part.shape[1] > model.cfg.block:
+            caches, offset, logits = rebuild_recent(out[:, :i], caches)
+        logits = model(part, caches=caches, pos_offset=offset)[0]
+        offset += part.shape[1]
 
     cur = out[:, -1:]
     produced = []
@@ -326,8 +324,10 @@ def stream(prompt, max_new):
                 yield {"swap": {"at": i, "moved": int(moved),
                                 "pool": resident_experts()}}
         if logits is None:
-            trim_caches(caches, model.cfg.block - cur.shape[1])
-            logits = model(cur, caches=caches, pos_offset=where(caches))[0]
+            if offset + cur.shape[1] > model.cfg.block:
+                caches, offset, logits = rebuild_recent(out[:, :-1], caches)
+            logits = model(cur, caches=caches, pos_offset=offset)[0]
+            offset += cur.shape[1]
         nxt = pick_next(logits[:, -1, :].float(), out, temperature=0.0,
                         adapt_strength=strength, adapt_decay=decay)
         out = torch.cat([out, nxt], dim=1)
