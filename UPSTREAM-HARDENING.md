@@ -44,3 +44,20 @@ deliberately.
 
 The release-review branch is `greenlight-release-review`; promotion to `main`
 uses a reviewed pull request and successful CI.
+
+## 2026-09-27 local-work integration
+
+Recovered Henric's code from bundle commit `00f0b1e81ea6b83e3d0d985207ac5a7c480311f3`
+and combined it with the reviewed `341ed6c` main branch. Model weight files
+were not included in the bundle or this integration.
+
+- Preserved the lab runner, Greenlight config alias and R1 naming, checkpoint
+  completeness checks, chat API validation, corpus failure propagation,
+  context ramp endpoint, growth reporting cadence, and local search containment.
+- Kept the previous paging, dry-read, serving rollover and upstream fixes.
+- Resolved explicit benchmark config precedence with GREENLIGHT_CONFIG.
+- Routed lab history and samples into its output directory and disabled shared
+  plotting, so lab runs do not rewrite the main run's history or plots.
+- Preserved README.md.clean as supplied; README.md is the maintained entry point.
+- Local validation: 61 CPU tests passed, plus compilation and diff whitespace
+  checks (excluding whitespace in the preserved README.md.clean). CI now checks Python 3.11 and 3.14. GPU training was not run here.

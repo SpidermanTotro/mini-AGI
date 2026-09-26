@@ -8,6 +8,7 @@ import torch
 from minagi.decode import contrastive_generate
 from minagi.report import render_report, weight_stats
 from minagi.recur import RecurCoder, RecurConfig
+from minagi.stream import ramp_context
 
 
 def tiny_config(**overrides):
@@ -29,6 +30,18 @@ def tiny_config(**overrides):
 
 
 class ModelStressTests(unittest.TestCase):
+    def test_context_ramp_reaches_unaligned_endpoint(self):
+        self.assertEqual(
+            ramp_context(step=100, total=100, start=512, end=800,
+                         granularity=256),
+            800)
+
+    def test_growth_held_report_uses_converted_step_cadence(self):
+        from train import _growth_held_due
+
+        self.assertTrue(_growth_held_due(9_770, 977))
+        self.assertFalse(_growth_held_due(20_000_000, 977))
+
     def test_rejects_invalid_transformer_and_recurrence_configs(self):
         for overrides in (
             {"d_model": 10, "n_head": 3},
@@ -172,6 +185,38 @@ class ModelStressTests(unittest.TestCase):
             torch.testing.assert_close(
                 resumed_optimizer.state[resumed.tok_emb.weight]["exp_avg"],
                 expected_trunk_m, atol=0.01, rtol=0.02)
+
+    def test_paged_checkpoint_rejects_missing_expert_file(self):
+        import train
+        from minagi.create import create
+        from minagi.store import save
+
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+                "os.environ", {"MINI_AGI_CONFIG": "",
+                               "GREENLIGHT_CONFIG": ""}):
+            weights = Path(root) / "weights"
+            settings = create(
+                str(weights), seed=9, verbose=False, d_model=8, n_head=2,
+                trunk_d_ff=12, block=8, max_steps=2, experts=4,
+                resident=1, d_ff=16, depth=1, top_k=2)
+            model, _, pool, manifest = train.build_paged(
+                str(weights), torch.device("cpu"), resident=1, ram_capacity=4)
+            pool.swap_to([0])
+            missing_entry = next(entry for entry in manifest["experts"]
+                                 if entry["id"] not in pool.slots)
+            (weights / "experts" / missing_entry["file"]).unlink()
+            manifest_path = weights / "manifest.json"
+            core_path = weights / "core.npz"
+            old_manifest = manifest_path.read_bytes()
+            old_core = core_path.read_bytes()
+
+            with self.assertRaisesRegex(FileNotFoundError, "missing expert"):
+                save(model, str(weights), step=1, cfg=settings)
+            self.assertEqual(manifest_path.read_bytes(), old_manifest)
+            self.assertEqual(core_path.read_bytes(), old_core)
+            with self.assertRaisesRegex(FileNotFoundError, "missing expert"):
+                train.build_paged(str(weights), torch.device("cpu"),
+                                  resident=1, ram_capacity=4)
 
     def test_paged_growth_and_pruning_keep_router_rows_and_expert_files_aligned(self):
         import torch.nn as nn

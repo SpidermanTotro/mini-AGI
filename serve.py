@@ -48,6 +48,7 @@ LOCK = threading.Lock()
 STATE = {"model": None, "tok": None, "weights": None, "learner": None}
 
 U0, U1, B0, B1 = "<user>", "</user>", "<bot>", "</bot>"
+MAX_NEW_TOKENS = 4096
 
 # A passage of the corpus the conversation opens with. Empty when priming is
 # off or no corpus is on disk.
@@ -387,11 +388,24 @@ def remember(user_text, bot_text):
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
-    body = request.get_json(force=True)
-    model = STATE["model"]
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify(error="request body must be a JSON object"), 400
     msgs = body.get("messages", [])
+    if (not isinstance(msgs, list)
+            or any(not isinstance(message, dict)
+                   or message.get("role") not in ("user", "bot", "assistant")
+                   or not isinstance(message.get("content"), str)
+                   for message in msgs)):
+        return jsonify(error="messages must contain role/content objects"), 400
+    max_new = body.get("max_new", 400)
+    if (not isinstance(max_new, int) or isinstance(max_new, bool)
+            or not 1 <= max_new <= MAX_NEW_TOKENS):
+        return jsonify(
+            error=f"max_new must be an integer from 1 to {MAX_NEW_TOKENS}"), 400
+
+    model = STATE["model"]
     prompt = build_prompt(msgs, int(model.cfg.block * 0.9), PRIME)
-    max_new = int(body.get("max_new", 400))
     # the half of the exchange the model did not predict, which is where the
     # signal in a conversation is
     last_user = next((m.get("content") for m in reversed(msgs)

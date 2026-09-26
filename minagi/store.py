@@ -220,6 +220,18 @@ def _save_paged(model, pool, path, step, val, opt, cfg, verbose, extra=None):
         raise RuntimeError(
             "cannot checkpoint a pool with a temporary expert overlay")
     pool.flush()
+    expert_dir = os.path.join(path, EXPERTS)
+    uid = getattr(pool, "uid", None)
+    missing = []
+    for i in range(pool.n_experts()):
+        expert_id = int(uid[i]) if uid is not None and i < uid.numel() else i
+        expert_file = os.path.join(expert_dir, "e%05d.npz" % expert_id)
+        if not os.path.isfile(expert_file):
+            missing.append(expert_id)
+    if missing:
+        raise FileNotFoundError(
+            f"refusing to save paged checkpoint: missing expert files {missing[:8]}")
+
     core, routers = {}, {}
     for k, v in model.state_dict().items():
         if k.startswith("pool."):
@@ -340,6 +352,19 @@ def load(model, path, opt=None, device=None, strict=False, verbose=False):
     device = device or next(model.parameters()).device
     with open(os.path.join(path, "manifest.json")) as f:
         man = json.load(f)
+    entries = man.get("experts")
+    if entries is not None:
+        expected = int(man.get("n_experts", len(entries)))
+        if len(entries) != expected:
+            raise RuntimeError(
+                f"checkpoint manifest lists {len(entries)} expert files, "
+                f"but declares {expected} experts")
+        missing = [entry.get("file") for entry in entries
+                   if not os.path.isfile(os.path.join(
+                       path, EXPERTS, entry.get("file", "")))]
+        if missing:
+            raise FileNotFoundError(
+                f"checkpoint is missing expert files: {missing[:8]}")
     sd = {}
     core = np.load(os.path.join(path, "core.npz"))
     routers = np.load(os.path.join(path, "routers.npz"))

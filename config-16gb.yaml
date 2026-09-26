@@ -1,4 +1,4 @@
-# Expanded starting architecture for one NVIDIA GPU with 16 GB VRAM and 32 GB
+# Greenlight-16G-R1 architecture for one NVIDIA GPU with 16 GB VRAM and 32 GB
 # system RAM. Start in its separate weights directory; this shape is not
 # compatible with the default 512-wide checkpoint.
 
@@ -66,7 +66,7 @@ prune:
 data:
   train: data/train
   held_out: data/val
-  weights: agi-16-large
+  weights: greenlight-16g-r1
   shuffle_seed: 0
   passage: 32768
 

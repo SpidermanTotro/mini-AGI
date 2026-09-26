@@ -1,20 +1,22 @@
 """
 Reading the selected YAML settings file.
 
-Both model creation and training read the same settings. MINI_AGI_CONFIG can
-select a separate profile; command-line flags still win where they are given.
+Both model creation and training read the same settings. GREENLIGHT_CONFIG
+selects a profile; MINI_AGI_CONFIG remains a compatibility alias.
 """
 
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT = os.path.join(ROOT, "config.yaml")
-CONFIG_ENV = "MINI_AGI_CONFIG"
+CONFIG_ENV = "GREENLIGHT_CONFIG"
+LEGACY_CONFIG_ENV = "MINI_AGI_CONFIG"
 
 
 def load(path=None):
     import yaml
-    path = path or os.environ.get(CONFIG_ENV) or DEFAULT
+    path = (path or os.environ.get(CONFIG_ENV)
+            or os.environ.get(LEGACY_CONFIG_ENV) or DEFAULT)
     if not os.path.exists(path):
         return {}
     with open(path) as f:
