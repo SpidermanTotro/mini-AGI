@@ -415,7 +415,7 @@ and a 0.88 GPU growth brake. Build a small corpus, then run a one-minute smoke
 job:
 
 ```bash
-python -m pip install -r requirements-optional.txt
+python -m pip install -r requirements.txt -r requirements-optional.txt
 python -m corpora all --limit 5000
 MINI_AGI_CONFIG=config-16gb.yaml python train.py read data/train \
     --weights-dir agi-16 --held-out data/val --save --minutes 1
