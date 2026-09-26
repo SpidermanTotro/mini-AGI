@@ -4,6 +4,8 @@ data_*/
 # The weights directory
 weights/*
 !weights/manifest.json
+weights-*/
+agi-16/
 
 # Run artefacts: logs, checkpoints, plots
 runs/*

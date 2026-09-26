@@ -12,6 +12,8 @@ many latent passes it took, what it has just read - not from sampling noise.
 """
 
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -141,10 +143,15 @@ def contrastive_generate(model, idx, max_new_tokens, top_k=8, alpha=0.6,
     Cost: one extra batched forward step of width top_k per token, sharing the
     context's KV cache. (Su & Collier 2022)
     """
+    if (not isinstance(max_new_tokens, int) or isinstance(max_new_tokens, bool)
+            or max_new_tokens < 0):
+        raise ValueError("max_new_tokens must be a nonnegative integer")
+    if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
+        raise ValueError("top_k must be a positive integer")
+    if not math.isfinite(alpha) or not 0 <= alpha <= 1:
+        raise ValueError("alpha must be finite and in [0, 1]")
     model.eval()
-    device = idx.device
-    n_layer = model.cfg.n_layer
-    caches = [{"k": None, "v": None} for _ in range(n_layer)]
+    caches = model.empty_caches()
     with amp(idx.device):
         logits, _, hidden = model(idx, caches=caches, pos_offset=0,
                                   return_hidden=True)

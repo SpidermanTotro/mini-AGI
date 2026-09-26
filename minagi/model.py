@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from dataclasses import dataclass
+import math
 
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -34,6 +35,21 @@ class Config:
     d_ff: int = 1408          # ~8/3 * d_model, rounded to a multiple of 64
     rope_theta: float = 10000.0
     tie_embeddings: bool = True
+
+    def __post_init__(self):
+        for name in ("vocab_size", "n_layer", "n_head", "d_model", "block", "d_ff"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        if self.d_model % self.n_head:
+            raise ValueError(
+                f"d_model ({self.d_model}) must be divisible by n_head ({self.n_head})")
+        head_dim = self.d_model // self.n_head
+        if head_dim % 2:
+            raise ValueError(
+                f"head dimension ({head_dim}) must be even for rotary embeddings")
+        if not math.isfinite(self.rope_theta) or self.rope_theta <= 0:
+            raise ValueError(f"rope_theta must be finite and positive, got {self.rope_theta!r}")
 
 
 # ----------------------------------------------------------------------------

@@ -22,6 +22,7 @@ own with `--only`.
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 
@@ -84,10 +85,36 @@ def build_stories(limit):
 
 
 def build_chat(limit):
-    return _sub("fetch", "--dataset", "teknium/OpenHermes-2.5",
-                "--kind", "chat", "--limit", limit, "--hold", _hold(limit),
-                "--out", "data/train/chat/hermes",
-                "--held-out", "data/val/chat")
+    rc = _sub("fetch", "--dataset", "teknium/OpenHermes-2.5",
+              "--kind", "chat", "--limit", limit, "--hold", _hold(limit),
+              "--out", "data/train/chat/hermes",
+              "--held-out", "data/val/chat")
+    if rc == 0:
+        return 0
+    print("!! chat fetch failed; falling back to local self-knowledge chat corpus")
+    conv = max(2000, limit or 40_000)
+    val = max(200, conv // 10)
+    rc2 = _sub("chat", "--out", "data_chat_char", "--conversations", conv,
+               "--val", val)
+    if rc2 != 0:
+        return rc2
+    rc3 = _sub("expand", "--only", "chat")
+    if rc3 != 0:
+        return rc3
+
+    src_train = "data/train/chat"
+    dst_train = "data/train/chat/hermes"
+    if os.path.isdir(src_train) and os.path.isdir(src_train) and dst_train != src_train:
+        os.makedirs(dst_train, exist_ok=True)
+        for name in os.listdir(src_train):
+            src_path = os.path.join(src_train, name)
+            dst_path = os.path.join(dst_train, name)
+            if os.path.isdir(src_path):
+                continue
+            if os.path.exists(dst_path):
+                os.remove(dst_path)
+            shutil.copy2(src_path, dst_path)
+    return 0
 
 
 def build_reasoning(limit):
@@ -114,8 +141,11 @@ def build_chess(_):
     return _generated("chess", "chess")
 
 
-def build_self_knowledge(_):
-    return _generated("chat", "chat")
+def build_self_knowledge(limit):
+    conversations = limit or 400_000
+    return _generated("chat", "self-knowledge", "--out", "data_self_chat_char",
+                      "--conversations", conversations,
+                      "--val", max(200, conversations // 100))
 
 
 BUILDERS = {

@@ -1,0 +1,80 @@
+# Same architecture as the default recipe, with a larger resident working set
+# for one NVIDIA GPU with 16 GB VRAM and 32 GB system RAM. Safe for a fresh run
+# or a compatible checkpoint using the default model/expert dimensions.
+
+model:
+  d_model: 512
+  n_head: 8
+  d_ff: 1408
+  n_prelude: 2
+  n_recur: 1
+  n_coda: 0
+  max_steps: 24
+  min_steps: 1
+  halt_prior: 0.072
+  halt_thresh: 0.9
+  ponder_beta: 0.01
+  bptt_window: 24
+  train_steps_mean: 12.8
+  context_start: 2048
+  context_end: 4096        # begin here; raise only after the first run is stable
+  context_step: 1
+  context_grow_every_chars: 100000
+  context_gain_min: 0.015
+  context_every_chars: 65536
+
+pool:
+  experts: 64
+  width: 2048
+  depth: 1
+  top_k: 8
+  resident: 56             # adjust in steps of 8 after checking nvidia-smi
+  ram_cache: 192
+  capacity_factor: 1.5
+  segment_chars: 2048
+  reselect_chars: 64
+  margin: 0.10
+  dwell_chars: 2048
+  explore: 0.15
+  key_floor: 0.25
+
+training:
+  save_every: 5
+  precision: bf16
+  chunk: 2048
+  lr: 3.0e-4
+  trunk_lr_mult: 0.1
+  weight_decay: 0.1
+  clip: 1.0
+
+growth:
+  every_chars: 2000000
+  k: 1
+  max_gap: 0.4
+  dying_frac_max: 0.35
+  max_in_flight: 50
+  keep_ratio_min: 0.35
+  recent_mult: 4.0
+  max_disk_gb: 24.0
+  mem_frac: 0.88
+  birth_gate: 0.001
+
+prune:
+  survival_chars: 100000000
+  dying_at: 0.65
+
+data:
+  train: data/train
+  held_out: data/val
+  weights: agi-16
+  shuffle_seed: 0
+  passage: 32768
+
+decoding:
+  adapt_strength: 2.5
+  adapt_decay: 0.88
+  rep_penalty: 1.0
+
+plots:
+  enabled: true
+  last: 100

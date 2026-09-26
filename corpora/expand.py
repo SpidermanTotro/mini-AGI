@@ -46,6 +46,7 @@ SOURCES = [
     ("code", "data_char", ".py"),
     ("arithmetic", "data_math_char", ".txt"),
     ("chat", "data_chat_char", ".txt"),
+    ("self-knowledge", "data_self_chat_char", ".txt"),
     ("chess", "data_chess_char", ".txt"),
 ]
 
@@ -62,6 +63,46 @@ def decode(arr, tok):
     produces the same ids it started from.
     """
     return tok.decode([int(v) for v in arr]).encode("utf-8", "surrogateescape")
+
+
+def decoded_chunks(arr, tok, chunk_tokens=1_000_000):
+    """Decode bounded token slices without splitting a UTF-8 continuation sequence."""
+    length = len(arr)
+    start = 0
+    while start < length:
+        end = min(start + chunk_tokens, length)
+        while end < length:
+            token = int(arr[end])
+            if token >= 256 or not 0x80 <= token <= 0xBF:
+                break
+            end += 1
+        yield tok.decode(arr[start:end].tolist()).encode("utf-8", "surrogateescape")
+        start = end
+
+
+def write_shards_stream(chunks, out_dir, stem, ext, shard_chars):
+    os.makedirs(out_dir, exist_ok=True)
+    pending = bytearray()
+    written = chars = 0
+
+    def write(data):
+        nonlocal written, chars
+        path = os.path.join(out_dir, f"{stem}-{written:05d}{ext}")
+        with open(path, "wb") as f:
+            f.write(data)
+        written += 1
+        chars += len(data)
+
+    for chunk in chunks:
+        pending.extend(chunk)
+        while len(pending) >= shard_chars:
+            boundary = pending.rfind(b"\n", shard_chars // 2, shard_chars)
+            cut = boundary + 1 if boundary >= 0 else shard_chars
+            write(pending[:cut])
+            del pending[:cut]
+    if pending:
+        write(pending)
+    return written, chars
 
 
 def write_shards(raw, out_dir, stem, ext, shard_chars, limit=None):
@@ -120,13 +161,14 @@ def main():
             arr = np.memmap(p, dtype=np.uint16, mode="r")
             cap = limit if split == "train" else (
                 None if limit is None else max(limit // 50, 200_000))
-            raw = decode(np.asarray(arr[:cap] if cap else arr), tok)
             out_dir = os.path.join(a.out, split, name)
             if a.only and os.path.isdir(out_dir):
                 for f in os.listdir(out_dir):
                     if f.endswith(ext):
                         os.remove(os.path.join(out_dir, f))
-            n, chars = write_shards(raw, out_dir, name, ext, a.shard_chars)
+            selected = arr[:cap] if cap else arr
+            n, chars = write_shards_stream(
+                decoded_chunks(selected, tok), out_dir, name, ext, a.shard_chars)
             total[(split, name)] = (n, chars)
             print(f"  {split}/{name:<11} {n:>5} files  {chars/1e6:>7.1f}M chars",
                   flush=True)

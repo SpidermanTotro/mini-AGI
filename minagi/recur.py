@@ -49,6 +49,44 @@ class RecurConfig(Config):
     halt_prior: float = 0.4   # geometric prior on depth; mean ~ 1/halt_prior
     halt_thresh: float = 0.9  # inference: halt once cumulative exceeds this
 
+    def __post_init__(self):
+        super().__post_init__()
+        for name in ("n_prelude", "n_recur", "n_coda"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{name} must be a nonnegative integer, got {value!r}")
+        for name in ("max_steps", "min_steps"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        if self.min_steps > self.max_steps:
+            raise ValueError(
+                f"min_steps ({self.min_steps}) cannot exceed max_steps ({self.max_steps})")
+        for name in ("pool_experts", "pool_d_ff", "pool_depth", "pool_top_k", "pool_max"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        if self.pool_top_k > self.pool_experts:
+            raise ValueError(
+                f"pool_top_k ({self.pool_top_k}) cannot exceed pool_experts ({self.pool_experts})")
+        if self.pool_max < self.pool_experts:
+            raise ValueError(
+                f"pool_max ({self.pool_max}) cannot be less than pool_experts ({self.pool_experts})")
+        if (not isinstance(self.bptt_window, int) or isinstance(self.bptt_window, bool)
+                or self.bptt_window < 0):
+            raise ValueError(
+                f"bptt_window must be a nonnegative integer, got {self.bptt_window!r}")
+        if not math.isfinite(self.halt_prior) or not 0 < self.halt_prior < 1:
+            raise ValueError(
+                f"halt_prior must be finite and in (0, 1), got {self.halt_prior!r}")
+        if not math.isfinite(self.halt_thresh) or not 0 < self.halt_thresh <= 1:
+            raise ValueError(
+                f"halt_thresh must be finite and in (0, 1], got {self.halt_thresh!r}")
+        for name in ("train_steps_mean", "ponder_beta", "pool_capacity_factor", "pool_aux"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and nonnegative, got {value!r}")
+
     @property
     def n_layer_effective(self):
         return self.n_prelude + self.max_steps * (self.n_recur + self.n_coda)
@@ -233,8 +271,49 @@ class RecurCoder(nn.Module):
         return max(c.min_steps, min(c.max_steps, n))
 
     def forward(self, idx, targets=None, caches=None, pos_offset=0,
-                collect=False):
+                collect=False, return_hidden=False):
         cfg = self.cfg
+        if not isinstance(idx, torch.Tensor) or idx.ndim != 2:
+            raise ValueError("idx must be a rank-2 [batch, sequence] tensor")
+        if idx.shape[0] == 0 or idx.shape[1] == 0:
+            raise ValueError("idx batch and sequence dimensions must be nonempty")
+        if idx.dtype not in (torch.int32, torch.int64):
+            raise ValueError(f"idx must have an integer dtype, got {idx.dtype}")
+        if (not isinstance(pos_offset, int) or isinstance(pos_offset, bool)
+                or pos_offset < 0):
+            raise ValueError(f"pos_offset must be a nonnegative integer, got {pos_offset!r}")
+        if targets is not None:
+            if not isinstance(targets, torch.Tensor) or targets.shape != idx.shape:
+                raise ValueError("targets must be a tensor with the same shape as idx")
+            if targets.dtype != torch.int64:
+                raise ValueError(f"targets must have dtype torch.int64, got {targets.dtype}")
+            if targets.device != idx.device:
+                raise ValueError("targets and idx must be on the same device")
+        if caches is not None:
+            if not isinstance(caches, (list, tuple)) or len(caches) != self.n_slots():
+                raise ValueError(
+                    f"caches must contain exactly {self.n_slots()} model slots")
+            cache_lengths = set()
+            for cache in caches:
+                if not isinstance(cache, dict):
+                    raise ValueError("each cache slot must be a dictionary")
+                key, value = cache.get("k"), cache.get("v")
+                if (key is None) != (value is None):
+                    raise ValueError("each cache slot must provide both k and v, or neither")
+                if key is None:
+                    continue
+                if (not isinstance(key, torch.Tensor) or not isinstance(value, torch.Tensor)
+                        or key.ndim != 4 or value.shape != key.shape
+                        or key.shape[:2] != (idx.shape[0], cfg.n_head)
+                        or key.shape[-1] != cfg.d_model // cfg.n_head):
+                    raise ValueError("cache k/v tensors have incompatible model dimensions")
+                cache_lengths.add(key.shape[-2])
+            if len(cache_lengths) > 1:
+                raise ValueError("all populated cache slots must have the same sequence length")
+            cached_length = next(iter(cache_lengths), 0)
+            if cached_length != pos_offset:
+                raise ValueError(
+                    f"pos_offset ({pos_offset}) must match cached length ({cached_length})")
         B, T = idx.shape
         x = self.tok_emb(idx)
         if pos_offset + T > self.rope_cos.shape[0]:
@@ -260,11 +339,27 @@ class RecurCoder(nn.Module):
         cum = torch.ones(B, T, 1, device=x.device, dtype=torch.float32)
         loss_terms, p_terms = [], []
         halted_logits = None
+        halted_hidden = None
+        weighted_hidden = None
         halted = torch.zeros(B, T, 1, device=x.device, dtype=torch.bool)
         steps_used = torch.zeros(B, T, device=x.device)
         per_step = []
 
-        n_steps = self.sample_depth()
+        if caches:
+            cached_depths = {cache.get("_depth") for cache in caches
+                             if cache.get("_depth") is not None}
+            if len(cached_depths) > 1:
+                raise ValueError("cache slots disagree about their sampled recurrence depth")
+            if cached_depths:
+                n_steps = cached_depths.pop()
+                if not 1 <= n_steps <= cfg.max_steps:
+                    raise ValueError("cached recurrence depth is outside the current config")
+            else:
+                n_steps = self.sample_depth()
+                for cache in caches:
+                    cache["_depth"] = n_steps
+        else:
+            n_steps = self.sample_depth()
         for n in range(n_steps):
             # truncated backprop: only the last few passes carry gradient, so
             # memory does not grow with depth
@@ -301,6 +396,9 @@ class RecurCoder(nn.Module):
                 term = logits_n * p_n.to(logits_n.dtype)
                 halted_logits = (term if halted_logits is None
                                  else halted_logits + term)
+                hidden_term = yf * p_n.to(yf.dtype)
+                weighted_hidden = (hidden_term if weighted_hidden is None
+                                   else weighted_hidden + hidden_term)
             else:
                 # Each token halts on its own schedule: the first step whose
                 # cumulative halting mass crosses the threshold is the one
@@ -308,18 +406,20 @@ class RecurCoder(nn.Module):
                 # step guarantees every token halts somewhere.
                 if halted_logits is None:
                     halted_logits = logits_n.clone()
+                    halted_hidden = yf.clone()
                     steps_used = torch.ones(B, T, device=x.device)
                 newly = (~halted) & ((1.0 - cum) >= cfg.halt_thresh)
                 if bool(newly.any()):
                     halted_logits = torch.where(newly, logits_n, halted_logits)
+                    halted_hidden = torch.where(newly, yf, halted_hidden)
                     steps_used = torch.where(
                         newly.squeeze(-1),
                         torch.full_like(steps_used, float(n + 1)), steps_used)
                 halted = halted | newly
             if collect:
                 per_step.append({"step": n + 1,
-                                 "halt_p": float(p_n.mean()),
-                                 "cum": float((1 - cum).mean())})
+                                 "halt_p": p_n.mean().detach().item(),
+                                 "cum": (1 - cum).mean().detach().item()})
 
         # what this stretch of text looked like, for the next segment's choice
         self.end_segment(x)
@@ -328,6 +428,8 @@ class RecurCoder(nn.Module):
             out = {"steps": steps_used} if collect else None
             if collect:
                 out["per_step"] = per_step
+            if return_hidden:
+                return halted_logits, out, halted_hidden
             return halted_logits, out
 
         # PonderNet: expected loss under the halting distribution, plus a KL
@@ -343,9 +445,11 @@ class RecurCoder(nn.Module):
         loss = loss + cfg.ponder_beta * kl.mean()
         steps = (P * torch.arange(1, len(p_terms) + 1, device=x.device)
                  .view(-1, 1, 1)).sum(0)
-        self.last_steps = float(steps.mean())
+        self.last_steps = steps.mean().detach().item()
         # logits are the halting-weighted mixture, so top-1 accuracy measured
         # downstream reflects what the model would actually have emitted
+        if return_hidden:
+            return halted_logits, loss, weighted_hidden
         return halted_logits, loss
 
     @torch.no_grad()

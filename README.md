@@ -401,6 +401,78 @@ The right panel shows which subjects are still moving. code, reasoning, chat, st
 
 ## Running it
 
+For the architecture teardown, clean rebuild steps, and source ZIP recipe, see
+[REBUILD.md](REBUILD.md).
+
+### Train your own weights: 16 GB VRAM
+
+The separate [config-16gb.yaml](config-16gb.yaml) keeps the default 512-wide
+trunk and 2048-wide experts, and raises the resident pool to 56 experts for a
+16 GB NVIDIA GPU with 32 GB system RAM. It starts random weights in
+`agi-16`; it does not load a pretrained model. The profile also sets a
+4096-character context, 24-row BPTT, a 192-expert RAM cache, a 24 GB disk cap,
+and a 0.88 GPU growth brake. Build a small corpus, then run a one-minute smoke
+job:
+
+```bash
+python -m pip install -r requirements-optional.txt
+python -m corpora all --limit 5000
+MINI_AGI_CONFIG=config-16gb.yaml python train.py read data/train \
+    --weights-dir agi-16 --held-out data/val --save --minutes 1
+```
+
+On Fedora, `./train-16gb.sh` runs that one-minute smoke test in `.venv`,
+checks CUDA/data availability, and prints GPU usage while training. It never
+deletes weights; set `WEIGHTS_DIR=agi-16-fresh ./train-16gb.sh` to start in
+a new directory. If the selected directory already has a manifest, training
+will resume it. After training completes, the script prints model stats and
+saves a timestamped evaluation report under `runs/`.
+
+After the smoke test, run `SMOKE_MINUTES=0 ./train-16gb.sh` for an unbounded
+training run; use `--passes 2` or higher when you deliberately want more passes
+with the direct command. Existing defaults are
+unchanged. This profile keeps the same architecture dimensions, so it can also
+run a compatible default-shape checkpoint: set `--weights-dir weights` to
+select it instead of starting the fresh `agi-16` model. Keep that path
+consistent when resuming.
+
+Watch `nvidia-smi`, `free -h`, and `df -h .` during the first 10-20 minutes.
+If VRAM approaches 14.5 GB or training runs out of memory, lower `pool.resident`
+by 8; if that is not enough, lower `model.bptt_window`. If usage stays below
+about 13 GB, try adding 8 resident experts at a time. Do not double the trunk
+or expert width as a first tuning step. This profile scales the experiment to
+the hardware; it does **not** make a frontier-level model or promise AGI.
+
+To compare your own checkpoint over time, save a prompt probe before and after
+training:
+
+```bash
+python -m minagi.evaluate --weights agi-16 \
+    --output runs/agi-16-baseline.json
+```
+
+Use a different output filename after more training. The report stores the
+checkpoint step and generated answers for the same continuation, instruction,
+code, and explanation prompts, plus exact-match results on four small
+arithmetic cases. This is only a smoke metric, not a standardized capability
+score; use separate held-out tasks for serious comparisons.
+
+### Local assistant
+
+The separate `mini_agent` CLI connects to a local Ollama server. Install Ollama,
+start its server, and pull an instruct model with tool-calling support:
+
+```bash
+ollama pull qwen3:8b
+python -m mini_agent --workspace . --model qwen3:8b
+```
+
+It stores conversation history in SQLite, can inspect/search the selected
+workspace, read Git status/diffs, and asks before writing files. For debugging,
+it can check Python syntax without running code and can run the unittest suite
+only after you approve execution. It does not expose arbitrary shell commands.
+This agent is a practical local assistant, not AGI.
+
 1. Make sure you have a CUDA-capable GPU with at least 8 GB of VRAM, and Python 3.10 or newer. The reference machine is an RTX 3070 Laptop GPU with 8 GB.
 2. Clone the repository:
     ```bash

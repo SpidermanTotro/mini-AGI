@@ -1,21 +1,20 @@
 """
-Reading config.yaml.
+Reading the selected YAML settings file.
 
-One file holds the settings worth changing, and both the tool that creates a
-model and the one that trains it read it, so a model cannot be built with one
-shape and trained with another. Command-line flags still win where they are
-given - the file is the default, not a cage.
+Both model creation and training read the same settings. MINI_AGI_CONFIG can
+select a separate profile; command-line flags still win where they are given.
 """
 
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT = os.path.join(ROOT, "config.yaml")
+CONFIG_ENV = "MINI_AGI_CONFIG"
 
 
 def load(path=None):
     import yaml
-    path = path or DEFAULT
+    path = path or os.environ.get(CONFIG_ENV) or DEFAULT
     if not os.path.exists(path):
         return {}
     with open(path) as f:

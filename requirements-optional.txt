@@ -1,0 +1,10 @@
+# Web chat server.
+Flask>=3.0
+
+# Dataset and chess corpus builders.
+datasets>=2.18
+python-chess>=1.999
+zstandard>=0.22
+
+# Optional replication analysis.
+scipy>=1.11

@@ -16,7 +16,10 @@ def weight_stats(model, step=None, loss=None, lr=None, gnorm=None):
         "params": model.n_params(),
         "params_non_embedding": model.n_params(non_embedding=True),
         "d_model": cfg.d_model,
-        "n_layer": cfg.n_layer,
+        "n_layer": getattr(cfg, "n_layer_effective", cfg.n_layer),
+        "n_block": (len(getattr(model, "prelude", ()))
+                + len(getattr(model, "recur", ()))
+                + len(getattr(model, "coda", ()))),
         "n_head": cfg.n_head,
         "block": cfg.block,
         "loss": loss,
@@ -40,7 +43,10 @@ def weight_stats(model, step=None, loss=None, lr=None, gnorm=None):
         })
 
     group("emb", [model.tok_emb.weight])
-    for i, b in enumerate(model.blocks):
+    blocks = (list(getattr(model, "prelude", ()))
+              + list(getattr(model, "recur", ()))
+              + list(getattr(model, "coda", ())))
+    for i, b in enumerate(blocks):
         # collect by module rather than by attribute name: a sparse block's
         # mlp is a router plus a bank of experts, not w1/w2/w3
         group(f"l{i}.attn", list(b.attn.parameters()))
@@ -69,7 +75,7 @@ def render_report(stats, full=False):
     if not full:
         # first, middle and last layer is enough to show the shape of the model
         keep = {"emb", "ln_f"}
-        L = stats["n_layer"]
+        L = stats["n_block"]
         for i in (0, L // 2, L - 1):
             keep |= {f"l{i}.attn", f"l{i}.mlp"}
         groups = [g for g in groups if g["name"] in keep]
