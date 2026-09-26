@@ -1,12 +1,12 @@
-# mini-AGI — Greenlight
+# Greenlight Recur
 
-**Greenlight** is an experimental development fork of [volotat/mini-AGI](https://github.com/volotat/mini-AGI), focused on making mini-AGI easier to test, reproduce, harden, and run on consumer hardware.
+**Greenlight Recur** is an experimental local AI research project derived from [volotat/mini-AGI](https://github.com/volotat/mini-AGI), focused on making mini-AGI easier to test, reproduce, harden, and run on consumer hardware.
 
-The original mini-AGI architecture and research project are by its upstream author. Greenlight builds on that work rather than claiming to replace it.
+The original mini-AGI architecture and research project are by its upstream author. Greenlight Recur builds on that work rather than claiming to replace it.
 
-## What Greenlight adds
+## What Greenlight Recur adds
 
-Greenlight currently focuses on:
+Greenlight Recur currently focuses on:
 
 - a practical 16 GB VRAM training configuration
 - reproducible local training and evaluation
@@ -24,32 +24,32 @@ Greenlight currently focuses on:
 
 ## Hardware target
 
-The primary Greenlight development target is a single consumer NVIDIA GPU with **16 GB VRAM** and **32 GB system RAM**.
+The primary Greenlight Recur development target is a single consumer NVIDIA GPU with **16 GB VRAM** and **32 GB system RAM**.
 
 The goal is not to claim that this is the minimum hardware mini-AGI can use. It is the configuration we actively develop and test against.
 
 ## Relationship with upstream
 
-Greenlight tracks the original mini-AGI project and aims to remain compatible with useful upstream developments.
+Greenlight Recur tracks the original mini-AGI project and aims to remain compatible with useful upstream developments.
 
 Where possible, bugs are reproduced before being patched and regression tests are added alongside fixes. Upstream changes are reviewed before integration so that Greenlight-specific reliability fixes are not silently overwritten.
 
-Greenlight is also intended to be a good place to validate fixes that may be useful upstream.
+Greenlight Recur is also intended to be a good place to validate fixes that may be useful upstream.
 
 ## Project status
 
 **Experimental / active development.**
 
-Greenlight is research software. Passing tests and successful training runs do not imply that the model has achieved AGI.
+Greenlight Recur is research software. Passing tests and successful training runs do not imply that the model has achieved AGI.
 
 Benchmark results should only be compared when the model, dataset, checkpoint, configuration, evaluation procedure, and hardware conditions are sufficiently matched.
 
 ## Credits
 
-Greenlight exists because of the original **mini-AGI** project and its architecture, training work, experiments, and continued upstream development.
+Greenlight Recur exists because of the original **mini-AGI** project and its architecture, training work, experiments, and continued upstream development.
 
 - Original project: https://github.com/volotat/mini-AGI
-- Greenlight development fork: https://github.com/SpidermanTotro/mini-AGI
+- Greenlight Recur development repository: https://github.com/SpidermanTotro/mini-AGI
 
 ---
 
