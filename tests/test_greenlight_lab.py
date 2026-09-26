@@ -2,8 +2,6 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-
 from greenlight_lab import read_feedback, run_lab, write_feedback
 
 
@@ -89,6 +87,26 @@ class GreenlightLabTests(unittest.TestCase):
             self.assertIn("--output", calls[1][0])
             self.assertEqual(calls[0][1]["GREENLIGHT_CONFIG"],
                              str(config.resolve()))
+
+    def test_lab_rejects_unbounded_zero_minute_rounds(self):
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            train = root_path / "train.txt"
+            held_out = root_path / "val.txt"
+            config = root_path / "config.yaml"
+            train.write_text("train", encoding="utf-8")
+            held_out.write_text("val", encoding="utf-8")
+            config.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "at least 1"):
+                run_lab(
+                    train_corpus=train,
+                    held_out=held_out,
+                    weights_dir=root_path / "weights",
+                    config=config,
+                    minutes_per_round=0,
+                    runner=lambda *args, **kwargs: self.fail("trainer must not run"),
+                    out_dir=root_path / "runs",
+                )
 
     def test_lab_refuses_to_modify_r1_checkpoint(self):
         with tempfile.TemporaryDirectory() as root:
