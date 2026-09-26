@@ -27,6 +27,7 @@ import argparse
 import os
 import shutil
 import sys
+import tempfile
 
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
@@ -86,8 +87,22 @@ def main():
     what = a.dataset + (f" [{a.config}]" if a.config else "")
     print(f"  {'streaming' if a.streaming else 'downloading'} {what}",
           flush=True)
-    d = load_dataset(a.dataset, a.config, split="train",
-                     streaming=a.streaming)
+    cache_dir = None
+    if not a.keep_cache:
+        # Own the cache we clean up.  Hugging Face's default cache is shared
+        # by every dataset on the account and must never be recursively
+        # deleted by this command.
+        cache_parent = os.path.abspath(os.path.dirname(a.out) or ".")
+        os.makedirs(cache_parent, exist_ok=True)
+        cache_dir = tempfile.mkdtemp(prefix=".mini-agi-hf-", dir=cache_parent)
+
+    try:
+        d = load_dataset(a.dataset, a.config, split="train",
+                         streaming=a.streaming, cache_dir=cache_dir)
+    except BaseException:
+        if cache_dir:
+            shutil.rmtree(cache_dir)
+        raise
     # A streamed dataset has no length - it is an iterator over a remote file,
     # and asking costs a full pass.
     print(f"  {len(d):,} records" if not a.streaming
@@ -129,12 +144,9 @@ def main():
     print(f"  wrote {files:,} files to {a.out}"
           + (f" and {held:,} to {a.held_out}" if a.held_out else "")
           + f", {chars/1e6:,.1f}M characters ({skipped:,} skipped)", flush=True)
-    if not a.keep_cache:
-        # datasets/ only. The parent also holds downloaded models and tokens
-        # that this script did not put there and has no business deleting.
-        shutil.rmtree(os.path.expanduser("~/.cache/huggingface/datasets"),
-                      ignore_errors=True)
-        print("  removed the dataset cache", flush=True)
+    if cache_dir:
+        shutil.rmtree(cache_dir)
+        print("  removed the temporary dataset cache", flush=True)
 
     if a.streaming:
         # datasets' streaming reader leaves a worker thread alive, and CPython
