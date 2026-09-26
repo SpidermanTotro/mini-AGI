@@ -665,10 +665,10 @@ def _cmd_read(args, dry_shadow=None):
     # No model here yet is a model that has not been made yet, not an error.
     # Everything about its shape is in config.yaml, so there is nothing to ask.
     #
-    # The test is core.npz, NOT whether the directory exists. The repository
-    # ships weights/manifest.json - it records what the released model is - so
-    # weights/ is already there on a fresh clone, and testing the directory
-    # sent every new reader straight into a missing core.npz.
+    # The test is core.npz, NOT whether the directory exists. A checkpoint
+    # directory may already exist with metadata but no core bundle (for
+    # example after a partial/manual copy), and treating directory existence as
+    # proof of a model would send a new reader into a missing core.npz.
     if not os.path.exists(os.path.join(wdir, "core.npz")):
         from minagi.create import create
         leftovers = ([f for f in os.listdir(source_wdir)
