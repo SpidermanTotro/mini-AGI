@@ -1,3 +1,4 @@
+import os
 import unittest
 
 from minagi.benchmark import activate_config, compare_reports, summarize_results
