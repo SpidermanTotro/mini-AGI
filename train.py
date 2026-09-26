@@ -554,6 +554,32 @@ def _lanes(files, seed, roots=None, resume=0):
             for j, k in enumerate(sorted(by))]
 
 
+def _truncate_history(path, chars):
+    """Drop history rows past `chars` - they belong to a branch that was
+    abandoned, and every reader of this file assumes it moves forward."""
+    if not path or not os.path.exists(path) or chars <= 0:
+        return
+    try:
+        with open(path) as f:
+            rows = f.read().splitlines()
+        keep, dropped = [], 0
+        for line in rows:
+            try:
+                if json.loads(line).get("chars", 0) > chars:
+                    dropped += 1
+                    continue
+            except json.JSONDecodeError:
+                pass                       # keep anything unparseable
+            keep.append(line)
+        if dropped:
+            with open(path, "w") as f:
+                f.write("\n".join(keep) + ("\n" if keep else ""))
+            print(f"  history: dropped {dropped} row(s) past "
+                  f"{chars/1e6:.1f}M - superseded by this resume", flush=True)
+    except OSError as e:
+        print(f"  (history not trimmed: {e})", flush=True)
+
+
 def cmd_read(args):
     """
     Point the model at files and let it read them.
@@ -888,6 +914,19 @@ def cmd_read(args):
         if len(early) < 8 or len(late) < 8:
             return None
         return float(np.mean(early) - np.mean(late))
+
+    # A RESUME SUPERSEDES WHATEVER THE OLD BRANCH WROTE. The history log is
+    # append-only and its character counter is not monotonic across a restart:
+    # reading on from a checkpoint leaves rows describing a model that no
+    # longer exists, sitting after the point being resumed from. Every reader
+    # then has to cope - the dashboard drew a seam, window_use reached back to
+    # the wrong row - and the file needs cleaning by hand every time an
+    # experiment is abandoned.
+    #
+    # So drop them here, once, at the point the run knows where it is
+    # resuming. Anything already past that mark describes a branch this run is
+    # not on.
+    _truncate_history(args.history, base_chars)
 
     # One lane per subject, rotated a window at a time.
     lanes = _lanes(files, args.shuffle_seed, args.paths,
@@ -1825,7 +1864,7 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
     # written before this existed carries no value for it and would otherwise
     # get the dataclass default, which is right but silent; taking it from the
     # config every load means the number in the file is the number in effect.
-    _key_floor = None
+    _key_floor = _audition = None
     try:
         from minagi.config import load as _load_cfg, get as _get_cfg
         _c = _load_cfg()
@@ -1836,6 +1875,7 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
         # than in cmd_read so that everything opening a paged model - serving,
         # the probes - schedules it the way the run does.
         _key_floor = _get_cfg(_c, "pool.key_floor", None)
+        _audition = _get_cfg(_c, "pool.audition_slots", None)
     except Exception:
         pass
     # the per-token router keeps one row per EXPERT, not per VRAM slot, so it
@@ -1870,6 +1910,8 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
     pool.attach_sites(model)
     if _key_floor is not None:
         pool.key_floor = float(_key_floor)
+    if _audition is not None:
+        pool.audition_slots = int(_audition)
     pool.load_telemetry(man.get("telemetry"))
     ever = cfgd.get("pool_ever")
     if ever:
