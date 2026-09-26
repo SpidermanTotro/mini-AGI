@@ -267,13 +267,13 @@ def cmd_stream(args):
             el = max(time.time() - t0, 1e-9)
             vram = (f" vram {torch.cuda.max_memory_allocated()/1e6:.0f}MB"
                     if device.type == "cuda" else "")
-            record("step", step=step, loss=float(loss), lr=lr,
+            record("step", step=step, loss=float(loss.detach()), lr=lr,
                    grad_norm=float(gn), chars=seen, chars_per_s=seen / el,
                    context=streams.context, experts=model.pool.n_experts(),
                    vram_mb=(torch.cuda.max_memory_allocated() / 1e6
                             if device.type == "cuda" else None))
             rp = (f" replay {streams.replays}" if args.replay > 0 else "")
-            print(f"step {step:>6}/{args.steps} loss {float(loss):.4f} "
+            print(f"step {step:>6}/{args.steps} loss {float(loss.detach()):.4f} "
                   f"lr {lr:.2e} gn {float(gn):.2f} ctx {streams.context//1024}k "
                   f"{seen/el/1e3:.1f}k char/s{vram}{rp}", flush=True)
 
@@ -1148,7 +1148,7 @@ def _cmd_read(args, dry_shadow=None):
                     with capture_routes() as got:
                         loss = r.step(learn=True, aux_weight=cfg.pool_aux)
                     if loss is not None and got:
-                        tracer.add(got, pool, lane, moved, step, float(loss),
+                        tracer.add(got, pool, lane, moved, step, float(loss.detach()),
                                    seen, nxt)
                 else:
                     loss = r.step(learn=True, aux_weight=cfg.pool_aux)
@@ -1171,11 +1171,11 @@ def _cmd_read(args, dry_shadow=None):
                 # every step so the gradient can reach all of it, and keeps no
                 # cache between steps. Detaching is what used to cut the
                 # gradient at the chunk boundary.
-                fl.append(float(loss))
-                recent.append(float(loss))
-                by_pos[j].append(float(loss))
+                fl.append(float(loss.detach()))
+                recent.append(float(loss.detach()))
+                by_pos[j].append(float(loss.detach()))
                 seen += args.chunk
-                nats += float(loss) * args.chunk
+                nats += float(loss.detach()) * args.chunk
                 step += 1
                 pool.now = step          # the clock the expert trial reads
                 plast.tick()
@@ -1305,7 +1305,7 @@ def _cmd_read(args, dry_shadow=None):
                               f"separated by {last_gap:.3f}, over "
                               f"{args.max_gap:.2f} - that is memorising, and "
                               f"more capacity would make it worse", flush=True)
-                    rec = (grower.step(float(loss), pool, step)
+                    rec = (grower.step(float(loss.detach()), pool, step)
                            if (args.save and may_grow) else {"grew": 0})
                     if gone or rec["grew"]:
                         _resync_opt(opt, model, args)

@@ -90,7 +90,7 @@ def run_lab(*, train_corpus: Path, held_out: Path, weights_dir: Path,
     if rounds < 1:
         raise ValueError("rounds must be at least one")
     if minutes_per_round < 1:
-        raise ValueError("minutes-per-round must be positive; zero means unlimited")
+        raise ValueError("minutes-per-round must be at least 1 for bounded lab runs")
     if not train_corpus.is_file():
         raise FileNotFoundError(f"training corpus file does not exist: {train_corpus}")
     if not held_out.exists():
