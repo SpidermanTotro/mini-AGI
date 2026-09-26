@@ -719,7 +719,11 @@ def _load_dir(path, device, paged=None, read_only=False):
     with open(os.path.join(path, "manifest.json")) as f:
         man = json.load(f)
     if paged is None:
-        paged = bool(man.get("paged"))
+        # A freshly-created paged checkpoint can already have its experts/
+        # layout before the first paged save adds "paged": true to manifest.
+        # Prefer that on-disk evidence instead of materialising every expert.
+        paged = bool(man.get("paged")) or os.path.isdir(
+            os.path.join(path, "experts"))
     if paged:
         # build_paged lives in train.py; a caller in another directory (the
         # film's captures run from video/) needs the repo root on the path
