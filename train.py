@@ -642,8 +642,9 @@ def cmd_read(args):
                   f"config.yaml")
         create(wdir, force=True)
         print()
-    model, cfg, pool, man = build_paged(wdir, device, args.resident,
-                                        args.ram_capacity, args.context)
+    model, cfg, pool, man = build_paged(
+        wdir, device, args.resident, args.ram_capacity, args.context,
+        read_only=not args.save)
     # the best held-out this run has seen, for the optional notifier below.
     # Reads the manifest, so it cannot move above build_paged.
     best_val = float(man.get("val") or float("inf"))
