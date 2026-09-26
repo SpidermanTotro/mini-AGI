@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
 from unittest import mock
 
 import torch
@@ -186,13 +187,20 @@ class WeightShadowTest(unittest.TestCase):
                 _create_tiny(path, block=64)
 
             stdout = io.StringIO()
-            with mock.patch("minagi.create.create", side_effect=tiny_create), \
-                    mock.patch.object(sys, "argv",
-                                      ["train.py"] + _read_args(text, source)), \
-                    contextlib.redirect_stdout(stdout):
-                with self.assertRaises(SystemExit) as stopped:
-                    train.main()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                with mock.patch("minagi.create.create", side_effect=tiny_create), \
+                        mock.patch.object(sys, "argv",
+                                          ["train.py"] + _read_args(text, source)), \
+                        contextlib.redirect_stdout(stdout):
+                    with self.assertRaises(SystemExit) as stopped:
+                        train.main()
 
+            grad_scalar_warnings = [
+                warning for warning in caught
+                if "requires_grad=True" in str(warning.message)
+            ]
+            self.assertEqual(grad_scalar_warnings, [])
             self.assertEqual(stopped.exception.code, 0)
             self.assertIn("temporary overlay", stdout.getvalue())
             self.assertFalse(os.path.exists(source))
