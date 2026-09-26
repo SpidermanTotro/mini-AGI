@@ -51,7 +51,7 @@ from minagi import store as weights_store
 from minagi.training_policy import chars_to_steps, growth_held_due, lr_at
 
 
-def __growth_held_due(step, grow_every_steps):
+def _growth_held_due(step, grow_every_steps):
     """Compatibility wrapper for the extracted growth diagnostic policy."""
     return growth_held_due(step, grow_every_steps)
 
