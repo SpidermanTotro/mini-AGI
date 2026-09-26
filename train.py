@@ -23,7 +23,6 @@ import re
 import sys
 import json
 import collections
-import math
 import time
 import argparse
 from dataclasses import asdict
@@ -49,19 +48,7 @@ from minagi.stream import StreamSet, Evaluator, detach_caches, ramp_context
 from minagi.plasticity import Plasticity
 from minagi.optim import GradSNR
 from minagi import store as weights_store
-
-
-def lr_at(step, total, base, warmup, floor_frac=0.1):
-    if step < warmup:
-        return base * (step + 1) / warmup
-    prog = (step - warmup) / max(1, total - warmup)
-    return base * (floor_frac + (1 - floor_frac) * 0.5 * (1 + math.cos(math.pi * prog)))
-
-
-
-
-def _growth_held_due(step, grow_every_steps):
-    return step % (grow_every_steps * 10) == 0
+from minagi.training_policy import chars_to_steps, growth_held_due, lr_at
 
 
 def _resync_opt(opt, model, args):
@@ -628,7 +615,7 @@ def _cmd_read(args, dry_shadow=None):
     # actually reads; steps are an implementation detail of how often we stop
     # to update. Convert once, here, where the chunk is known.
     def _in_steps(chars, least=1):
-        return max(least, int(round(int(chars) / max(1, args.chunk))))
+        return chars_to_steps(chars, args.chunk, least=least)
 
     grow_every_steps = _in_steps(args.grow_every)
     survival_steps = _in_steps(args.prune_survival)
@@ -1299,7 +1286,7 @@ def _cmd_read(args, dry_shadow=None):
                     gap_ok = (last_gap is None or args.max_gap <= 0
                               or last_gap < args.max_gap)
                     may_grow = gap_ok
-                    if not may_grow and _growth_held_due(
+                    if not may_grow and growth_held_due(
                             step, grow_every_steps):
                         print(f"    growth held: train and held-out have "
                               f"separated by {last_gap:.3f}, over "
