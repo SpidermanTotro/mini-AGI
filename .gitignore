@@ -1,10 +1,17 @@
 # Corpora: hundreds of megabytes of .bin, rebuilt by `python3 -m corpora.*`
 data_*/
 
-# The weights directory
-weights/*
-!weights/manifest.json
+# Model checkpoints are local runtime state, never source files.
+# The canonical checkpoint lives under weights/. Legacy/local exports may also
+# exist as loose root-level bundles; ignore those too so `git add .` cannot
+# accidentally stage trained weights or optimizer state.
+weights/
 weights-*/
+/core.npz
+/routers.npz
+/optim.npz
+/manifest.json
+/experts/
 agi-16/
 agi-16-large/
 greenlight-16g-r1/
