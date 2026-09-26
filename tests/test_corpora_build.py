@@ -28,5 +28,20 @@ class CorporaBuildTests(unittest.TestCase):
         self.assertEqual(sub.call_args_list[2].args[0], "expand")
 
 
+    @patch("corpora.build._generated")
+    def test_self_knowledge_has_dedicated_lane(self, generated):
+        generated.return_value = 0
+
+        self.assertEqual(build.build_self_knowledge(1234), 0)
+
+        generated.assert_called_once_with(
+            "chat", "self-knowledge", "--out", "data_self_chat_char",
+            "--conversations", 1234, "--val", 200)
+
+        from corpora import expand
+        mapping = {name: src for name, src, _ in expand.SOURCES}
+        self.assertEqual(mapping["self-knowledge"], "data_self_chat_char")
+        self.assertNotEqual(mapping["self-knowledge"], mapping["chat"])
+
 if __name__ == "__main__":
     unittest.main()
