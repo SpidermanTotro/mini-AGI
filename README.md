@@ -1,4 +1,59 @@
-# mini-AGI
+# mini-AGI — Greenlight
+
+**Greenlight** is an experimental development fork of [volotat/mini-AGI](https://github.com/volotat/mini-AGI), focused on making mini-AGI easier to test, reproduce, harden, and run on consumer hardware.
+
+The original mini-AGI architecture and research project are by its upstream author. Greenlight builds on that work rather than claiming to replace it.
+
+## What Greenlight adds
+
+Greenlight currently focuses on:
+
+- a practical 16 GB VRAM training configuration
+- reproducible local training and evaluation
+- automated CI and regression testing
+- a benchmark/provenance harness
+- model and expert stress tests
+- safer paged-model loading and dry-read behaviour
+- evaluation context/RoPE boundary protection
+- serving and KV-cache rollover hardening
+- GradSNR robustness when active gradient sets change
+- safer corpus/cache handling
+- expert-pool diagnostics and plotting
+- a local agent interface and local Ollama integration
+- compatibility work for ongoing upstream mini-AGI development
+
+## Hardware target
+
+The primary Greenlight development target is a single consumer NVIDIA GPU with **16 GB VRAM** and **32 GB system RAM**.
+
+The goal is not to claim that this is the minimum hardware mini-AGI can use. It is the configuration we actively develop and test against.
+
+## Relationship with upstream
+
+Greenlight tracks the original mini-AGI project and aims to remain compatible with useful upstream developments.
+
+Where possible, bugs are reproduced before being patched and regression tests are added alongside fixes. Upstream changes are reviewed before integration so that Greenlight-specific reliability fixes are not silently overwritten.
+
+Greenlight is also intended to be a good place to validate fixes that may be useful upstream.
+
+## Project status
+
+**Experimental / active development.**
+
+Greenlight is research software. Passing tests and successful training runs do not imply that the model has achieved AGI.
+
+Benchmark results should only be compared when the model, dataset, checkpoint, configuration, evaluation procedure, and hardware conditions are sufficiently matched.
+
+## Credits
+
+Greenlight exists because of the original **mini-AGI** project and its architecture, training work, experiments, and continued upstream development.
+
+- Original project: https://github.com/volotat/mini-AGI
+- Greenlight development fork: https://github.com/SpidermanTotro/mini-AGI
+
+---
+
+## Upstream mini-AGI documentation
 
 mini-AGI - is a **continual learning** byte-level language model that assembles its own architecture, trains from scratch on a single 8 GB VRAM GPU, and keeps learning from everything it reads.
 It stores its weights as ordinary files on disk and pages them onto the card as it needs them, so the parameter count is bounded by free disk space rather than by VRAM. It grows new capacity while training when it runs short, prunes what nothing asks for, and reads through exactly the same code path it serves on. Targeted at a PC or laptop with at least an 8 GB VRAM GPU on the board. 
