@@ -471,9 +471,13 @@ ollama pull qwen3:8b
 python -m mini_agent --workspace . --model qwen3:8b
 ```
 
-For programming tasks, the assistant can inspect files, draft approved edits,
-check Python syntax, and run project tests after approval. For image generation,
-run a local AUTOMATIC1111/Forge server with its API enabled and set its base URL:
+The assistant uses whichever tool-calling model Ollama serves. `qwen3:8b` is a
+small example, not a claim of top-tier coding or reasoning. For harder work,
+select a stronger coding/instruct model that fits your RAM and VRAM with
+`--model` or `OLLAMA_MODEL`. Quality depends mainly on that model. For
+programming, it can inspect files, draft approved edits, check Python syntax,
+and run all or one `test_*.py` file after approval. For image generation, run a
+local AUTOMATIC1111/Forge server with its API enabled and set its base URL:
 
 ```bash
 MINI_AGENT_IMAGE_API=http://127.0.0.1:7860 \

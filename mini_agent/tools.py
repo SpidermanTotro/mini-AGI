@@ -7,6 +7,7 @@ import ipaddress
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -124,8 +125,14 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "run_tests",
-            "description": "Run the workspace unittest suite. This executes project test code and requires user approval.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
+            "description": "Run all workspace tests or one test_*.py file. This executes project test code and requires user approval.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Optional test filename such as test_parser.py."},
+                },
+                "required": [],
+            },
         },
     },
     {
@@ -336,12 +343,24 @@ class WorkspaceTools:
                     f"{error.lineno}: {error.msg}")
         return f"Syntax OK: {file.relative_to(self.root)}"
 
-    def run_tests(self):
-        if not (self.root / "tests").is_dir():
+    def run_tests(self, pattern=None):
+        tests_dir = self.root / "tests"
+        if not tests_dir.is_dir():
             return "Test error: workspace has no tests/ directory."
+        if pattern is not None:
+            if not isinstance(pattern, str) or not re.fullmatch(
+                    r"test_[A-Za-z0-9_]+\.py", pattern):
+                raise ValueError("pattern must be a test_*.py filename")
+            target = tests_dir / pattern
+            if (not target.is_file()
+                    or target.resolve().parent != tests_dir.resolve()):
+                return f"Test error: no in-workspace test file named {pattern}."
         if self.confirm_run is None or not self.confirm_run():
             return "Test run denied; user approval is required."
-        command = [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
+        command = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
+        if pattern is not None:
+            command.extend(("-p", pattern))
+        command.append("-v")
         try:
             result = subprocess.run(command, cwd=self.root, text=True,
                                     capture_output=True, timeout=180, check=False)

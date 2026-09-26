@@ -136,6 +136,27 @@ class LocalAgentTests(unittest.TestCase):
             self.assertEqual(command[1:5], ["-m", "unittest", "discover", "-s"])
             self.assertNotIn("shell", run.call_args.kwargs)
 
+    def test_targeted_test_runner_only_accepts_workspace_test_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            tests_dir = Path(root) / "tests"
+            tests_dir.mkdir()
+            (tests_dir / "test_parser.py").write_text("", encoding="utf-8")
+            tools = WorkspaceTools(root, confirm_run=lambda: True)
+            completed = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="Ran 1 test", stderr="")
+            with patch("mini_agent.tools.subprocess.run", return_value=completed) as run:
+                result = tools.call("run_tests", {"pattern": "test_parser.py"})
+            self.assertIn("status 0", result)
+            command = run.call_args.args[0]
+            self.assertEqual(command[1:], ["-m", "unittest", "discover", "-s",
+                                           "tests", "-p", "test_parser.py", "-v"])
+            self.assertEqual(run.call_args.kwargs["cwd"], Path(root))
+
+            with patch("mini_agent.tools.subprocess.run") as run:
+                result = tools.call("run_tests", {"pattern": "../outside.py"})
+            self.assertIn("pattern must be", result)
+            run.assert_not_called()
+
     def test_git_diagnostics_use_fixed_read_only_commands(self):
         with tempfile.TemporaryDirectory() as root:
             tools = WorkspaceTools(root)

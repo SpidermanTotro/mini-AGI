@@ -16,7 +16,7 @@ def approve_write(path, replacing):
 
 def approve_test_run():
     answer = input(
-        "\nRun the workspace unittest suite? This executes repository test code. [y/N] "
+        "\nRun the requested unittest suite? This executes repository test code. [y/N] "
     )
     return answer.strip().casefold() in {"y", "yes"}
 
@@ -24,7 +24,11 @@ def approve_test_run():
 def main():
     parser = argparse.ArgumentParser(description="Local Ollama assistant with guarded workspace tools")
     parser.add_argument("--workspace", default=".", help="workspace root for read/write tools")
-    parser.add_argument("--model", default=os.environ.get("OLLAMA_MODEL", "qwen3:8b"))
+    parser.add_argument(
+        "--model",
+        default=os.environ.get("OLLAMA_MODEL", "qwen3:8b"),
+        help="Ollama tool-calling model; choose a coding-capable model that fits your hardware",
+    )
     parser.add_argument("--url", default=os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434"))
     parser.add_argument(
         "--image-api-url",
