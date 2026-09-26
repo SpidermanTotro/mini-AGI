@@ -49,7 +49,7 @@ from minagi.plasticity import Plasticity
 from minagi.optim import GradSNR
 from minagi import store as weights_store
 from minagi.training_policy import chars_to_steps, growth_held_due, lr_at
-from minagi.history import append_jsonl, truncate_history
+from minagi.history import JsonlRecorder, append_jsonl, truncate_history
 
 
 def _growth_held_due(step, grow_every_steps):
@@ -211,10 +211,8 @@ def cmd_stream(args):
     # model bug and was not. Appended a line at a time, so an interrupted run
     # keeps everything up to the interruption.
     hist_path = os.path.join(args.out, "history.jsonl")
-    hist = open(hist_path, "a", buffering=1)
-
-    def record(kind, step=None, **kw):
-        hist.write(json.dumps({"kind": kind, "step": step, **kw}) + "\n")
+    hist = JsonlRecorder(hist_path)
+    record = hist.record
 
     record("start", weights_dir=wdir, context=cfg.block, chunk=args.chunk,
            accum=args.accum, lr=args.lr, trunk_lr_mult=args.trunk_lr_mult,
