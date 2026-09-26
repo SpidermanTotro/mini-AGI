@@ -543,7 +543,15 @@ class RecurCoder(nn.Module):
         p.swap_to(self.canonical_experts())
         p.arm_observation()          # drop what the last text left behind
         self(look, caches=self.empty_caches(), pos_offset=0)
-        return self.choose_for(look, free=free)
+        # NO AUDITIONS AT A BOUNDARY. An audition is chosen by a clock, so it
+        # depends on what was read before - which is exactly the dependence a
+        # boundary is supposed to be free of. Auditions still happen on every
+        # chunk within the passage, which is fifteen of every sixteen.
+        aud, p.audition_slots = getattr(p, "audition_slots", 0), 0
+        try:
+            return self.choose_for(look, free=free)
+        finally:
+            p.audition_slots = aud
 
     @torch.no_grad()
     def canonical_experts(self):
