@@ -1,9 +1,24 @@
 import unittest
 
-from minagi.benchmark import compare_reports, summarize_results
+from minagi.benchmark import activate_config, compare_reports, summarize_results
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_activate_config_sets_absolute_environment_path(self):
+        old = os.environ.get("MINI_AGI_CONFIG")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "config.yaml"
+                path.write_text("model: {}\\n", encoding="utf-8")
+                activated = activate_config(path)
+                self.assertEqual(activated, str(path.resolve()))
+                self.assertEqual(os.environ["MINI_AGI_CONFIG"], str(path.resolve()))
+        finally:
+            if old is None:
+                os.environ.pop("MINI_AGI_CONFIG", None)
+            else:
+                os.environ["MINI_AGI_CONFIG"] = old
+
     def test_summary_counts_scored_cases(self):
         results = [
             {"name": "a", "exact_match": True},
