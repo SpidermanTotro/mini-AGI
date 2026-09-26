@@ -51,6 +51,12 @@ from minagi import store as weights_store
 from minagi.training_policy import chars_to_steps, growth_held_due, lr_at
 
 
+def __growth_held_due(step, grow_every_steps):
+    """Compatibility wrapper for the extracted growth diagnostic policy."""
+    return growth_held_due(step, grow_every_steps)
+
+
+
 def _resync_opt(opt, model, args):
     """Drop parameters the model no longer has, adopt the ones it gained.
 
@@ -1286,7 +1292,7 @@ def _cmd_read(args, dry_shadow=None):
                     gap_ok = (last_gap is None or args.max_gap <= 0
                               or last_gap < args.max_gap)
                     may_grow = gap_ok
-                    if not may_grow and growth_held_due(
+                    if not may_grow and _growth_held_due(
                             step, grow_every_steps):
                         print(f"    growth held: train and held-out have "
                               f"separated by {last_gap:.3f}, over "
