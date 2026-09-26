@@ -49,7 +49,7 @@ from minagi.plasticity import Plasticity
 from minagi.optim import GradSNR
 from minagi import store as weights_store
 from minagi.training_policy import chars_to_steps, growth_held_due, lr_at
-from minagi.history import truncate_history
+from minagi.history import append_jsonl, truncate_history
 
 
 def _growth_held_due(step, grow_every_steps):
@@ -994,9 +994,7 @@ def _cmd_read(args, dry_shadow=None):
                    "since": t["since"], "born": t["born"],
                    "last_seen": t.get("last_seen"), "uid": t.get("uid"),
                    "trial": getattr(model.pool, "trial", 0)}
-            os.makedirs(os.path.dirname(args.history) or ".", exist_ok=True)
-            with open(args.history, "a") as f:
-                f.write(json.dumps(row, separators=(",", ":")) + "\n")
+            append_jsonl(args.history, row, compact=True)
         except Exception as e:                  # telemetry must never stop a run
             print(f"    (history not written: {e})", flush=True)
 
