@@ -49,6 +49,7 @@ from minagi.plasticity import Plasticity
 from minagi.optim import GradSNR
 from minagi import store as weights_store
 from minagi.training_policy import chars_to_steps, growth_held_due, lr_at
+from minagi.history import truncate_history
 
 
 def _growth_held_due(step, grow_every_steps):
@@ -552,25 +553,10 @@ def _lanes(files, seed, roots=None, resume=0):
 
 
 def _truncate_history(path, chars):
-    """Drop history rows past `chars` - they belong to a branch that was
-    abandoned, and every reader of this file assumes it moves forward."""
-    if not path or not os.path.exists(path) or chars <= 0:
-        return
+    """Compatibility wrapper around the shared history cleanup helper."""
     try:
-        with open(path) as f:
-            rows = f.read().splitlines()
-        keep, dropped = [], 0
-        for line in rows:
-            try:
-                if json.loads(line).get("chars", 0) > chars:
-                    dropped += 1
-                    continue
-            except json.JSONDecodeError:
-                pass                       # keep anything unparseable
-            keep.append(line)
+        dropped = truncate_history(path, chars)
         if dropped:
-            with open(path, "w") as f:
-                f.write("\n".join(keep) + ("\n" if keep else ""))
             print(f"  history: dropped {dropped} row(s) past "
                   f"{chars/1e6:.1f}M - superseded by this resume", flush=True)
     except OSError as e:
