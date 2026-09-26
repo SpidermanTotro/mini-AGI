@@ -231,10 +231,12 @@ class WorkspaceTools:
                     continue
                 file = Path(directory) / filename
                 try:
-                    if file.stat().st_size > MAX_SEARCH_BYTES:
+                    file = file.resolve()
+                    if (not file.is_relative_to(self.root)
+                            or file.stat().st_size > MAX_SEARCH_BYTES):
                         continue
                     lines = file.read_text(encoding="utf-8").splitlines()
-                except (UnicodeDecodeError, OSError):
+                except (UnicodeDecodeError, OSError, RuntimeError):
                     continue
                 for number, line in enumerate(lines, 1):
                     if query in line.casefold():

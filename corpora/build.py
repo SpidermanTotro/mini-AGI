@@ -104,7 +104,7 @@ def build_chat(limit):
 
     src_train = "data/train/chat"
     dst_train = "data/train/chat/hermes"
-    if os.path.isdir(src_train) and os.path.isdir(src_train) and dst_train != src_train:
+    if os.path.isdir(src_train):
         os.makedirs(dst_train, exist_ok=True)
         for name in os.listdir(src_train):
             src_path = os.path.join(src_train, name)
@@ -113,7 +113,7 @@ def build_chat(limit):
                 continue
             if os.path.exists(dst_path):
                 os.remove(dst_path)
-            shutil.copy2(src_path, dst_path)
+            shutil.move(src_path, dst_path)
     return 0
 
 
@@ -201,7 +201,12 @@ def main():
             limit = a.limit
         else:
             limit = 0 if a.full else SAMPLED.get(name, 0)
-        fn(limit)
+        rc = fn(limit)
+        if rc:
+            print(f"!! {name} builder failed with status {rc}",
+                  file=sys.stderr)
+            failed.append(name)
+            continue
         if not _has_files(where):
             print(f"!! {name} produced nothing - carrying on", file=sys.stderr)
             failed.append(name)

@@ -13,7 +13,8 @@ PROFILE = ROOT / "config-16gb.yaml"
 
 class ConfigProfileTests(unittest.TestCase):
     def test_16gb_profile_is_selectable_and_architecture_is_valid(self):
-        with patch.dict(os.environ, {"MINI_AGI_CONFIG": str(PROFILE)}):
+        with patch.dict(os.environ, {
+            "GREENLIGHT_CONFIG": str(PROFILE), "MINI_AGI_CONFIG": ""}):
             settings = load()
 
         self.assertEqual(get(settings, "model.d_model"), 768)
@@ -24,7 +25,7 @@ class ConfigProfileTests(unittest.TestCase):
         self.assertEqual(get(settings, "pool.resident"), 64)
         self.assertEqual(get(settings, "pool.ram_cache"), 128)
         self.assertEqual(get(settings, "model.context_end"), 4096)
-        self.assertEqual(get(settings, "data.weights"), "agi-16-large")
+        self.assertEqual(get(settings, "data.weights"), "greenlight-16g-r1")
         cfg = RecurConfig(
             vocab_size=265,
             d_model=settings["model"]["d_model"],
@@ -53,11 +54,25 @@ class ConfigProfileTests(unittest.TestCase):
         self.assertLess(ram_cache_gib, 11.0)
 
     def test_default_profile_remains_unchanged_without_override(self):
-        with patch.dict(os.environ, {"MINI_AGI_CONFIG": ""}):
+        with patch.dict(os.environ, {
+            "GREENLIGHT_CONFIG": "", "MINI_AGI_CONFIG": ""}):
             settings = load()
         self.assertEqual(get(settings, "model.d_model"), 512)
         self.assertEqual(get(settings, "pool.resident"), 32)
         self.assertEqual(get(settings, "model.context_end"), 8192)
+
+    def test_legacy_config_environment_variable_remains_supported(self):
+        with patch.dict(os.environ, {
+                "GREENLIGHT_CONFIG": "", "MINI_AGI_CONFIG": str(PROFILE)}):
+            settings = load()
+        self.assertEqual(get(settings, "data.weights"), "greenlight-16g-r1")
+
+    def test_greenlight_config_takes_precedence_over_legacy_variable(self):
+        with patch.dict(os.environ, {
+                "GREENLIGHT_CONFIG": str(PROFILE),
+                "MINI_AGI_CONFIG": "/does/not/exist.yaml"}):
+            settings = load()
+        self.assertEqual(get(settings, "data.weights"), "greenlight-16g-r1")
 
 
 if __name__ == "__main__":

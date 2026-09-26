@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import os
 import tempfile
 import subprocess
 import unittest
@@ -50,6 +51,21 @@ class LocalAgentTests(unittest.TestCase):
             result = allowed.call("write_file", {"path": "new.txt", "content": "yes"})
             self.assertIn("Wrote new.txt", result)
             self.assertEqual((root_path / "new.txt").read_text(encoding="utf-8"), "yes")
+
+    def test_search_text_does_not_follow_symlink_outside_workspace(self):
+        with tempfile.TemporaryDirectory() as root, \
+                tempfile.TemporaryDirectory() as outside:
+            private = Path(outside) / "private.txt"
+            private.write_text("external secret marker", encoding="utf-8")
+            link = Path(root) / "linked.txt"
+            try:
+                os.symlink(private, link)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlinks unavailable: {error}")
+
+            tools = WorkspaceTools(root)
+            self.assertEqual(tools.search_text("external secret marker"),
+                             "No matches.")
 
     def test_image_generation_is_local_and_requires_approval(self):
         with tempfile.TemporaryDirectory() as root:

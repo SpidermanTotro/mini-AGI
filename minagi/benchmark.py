@@ -40,8 +40,10 @@ def _config_info(path):
 def activate_config(path):
     """Make an explicit benchmark config authoritative for downstream loaders."""
     if path:
-        os.environ["MINI_AGI_CONFIG"] = str(Path(path).resolve())
-    return os.environ.get("MINI_AGI_CONFIG")
+        selected = str(Path(path).resolve())
+        os.environ["GREENLIGHT_CONFIG"] = selected
+        os.environ["MINI_AGI_CONFIG"] = selected
+    return os.environ.get("GREENLIGHT_CONFIG") or os.environ.get("MINI_AGI_CONFIG")
 
 
 def system_metadata(device):

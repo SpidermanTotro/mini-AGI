@@ -60,6 +60,10 @@ def lr_at(step, total, base, warmup, floor_frac=0.1):
 
 
 
+def _growth_held_due(step, grow_every_steps):
+    return step % (grow_every_steps * 10) == 0
+
+
 def _resync_opt(opt, model, args):
     """Drop parameters the model no longer has, adopt the ones it gained.
 
@@ -1295,7 +1299,8 @@ def _cmd_read(args, dry_shadow=None):
                     gap_ok = (last_gap is None or args.max_gap <= 0
                               or last_gap < args.max_gap)
                     may_grow = gap_ok
-                    if not may_grow and step % (args.grow_every * 10) == 0:
+                    if not may_grow and _growth_held_due(
+                            step, grow_every_steps):
                         print(f"    growth held: train and held-out have "
                               f"separated by {last_gap:.3f}, over "
                               f"{args.max_gap:.2f} - that is memorising, and "
@@ -1877,6 +1882,19 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
     from minagi.paged import PagedPool
     with open(os.path.join(wdir, "manifest.json")) as f:
         man = json.load(f)
+    entries = man.get("experts")
+    if entries is not None:
+        expected = int(man.get("n_experts", len(entries)))
+        if len(entries) != expected:
+            raise RuntimeError(
+                f"checkpoint manifest lists {len(entries)} expert files, "
+                f"but declares {expected} experts")
+        missing = [entry.get("file") for entry in entries
+                   if not os.path.isfile(os.path.join(
+                       wdir, "experts", entry.get("file", "")))]
+        if missing:
+            raise FileNotFoundError(
+                f"checkpoint is missing expert files: {missing[:8]}")
     cfgd = dict(man["cfg"])
     resident = resident or cfgd.get("pool_resident") or cfgd["pool_top_k"]
     cfg = RecurConfig(**{k: v for k, v in cfgd.items()

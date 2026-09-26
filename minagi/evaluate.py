@@ -86,8 +86,8 @@ def evaluate_cases(model, device, max_new_tokens=128, cases=PROMPTS):
 def main():
     parser = argparse.ArgumentParser(
         description="Save repeatable prompt outputs for comparing mini-AGI checkpoints")
-    parser.add_argument("--weights", default="agi-16")
-    parser.add_argument("--output", default="runs/agi-16-benchmark.json")
+    parser.add_argument("--weights", default="greenlight-16g-r1")
+    parser.add_argument("--output", default="runs/greenlight-16g-r1-benchmark.json")
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--precision", choices=("bf16", "fp16", "fp32"), default="bf16")

@@ -1,88 +1,18 @@
-# Greenlight Recur
+# mini-AGI
 
-**Greenlight Recur** is an experimental local AI research project derived from [volotat/mini-AGI](https://github.com/volotat/mini-AGI), focused on making mini-AGI easier to test, reproduce, harden, and run on consumer hardware.
+mini-AGI - is a **continual learning** byte-level language model that assembles its own architecture, trains from scratch on a single 8 GB VRAM GPU, and keeps learning from everything it reads.
+It stores its weights as ordinary files on disk and pages them onto the card as it needs them, so the parameter count is bounded by free disk space rather than by VRAM. It grows new capacity while training when it runs short, prunes what nothing asks for, and reads through exactly the same code path it serves on. Targeted at a PC or laptop with at least an 8 GB VRAM GPU on the board. 
 
-The original mini-AGI architecture and research project are by its upstream author. Greenlight Recur builds on that work rather than claiming to replace it.
+**NOTE: as of now this is a small toy-level model.** Do not expect a frontier level capabilities. This is rather a small experiment to show, that continual learning from the single stream of data without catastrophic forgetting is possible. Furthermore it is possible on a modest hardware. Which means that almost everyone could train their own version of the model (or simply continue training this one) exactly as they see it fit. And the capabilities would be bounded by the actual hardware, scale and quality of the data available and the amount of time one willing to spend on training the model.
 
-## What Greenlight Recur adds
+*The name is a half-joke and not a statement of the current capabilities of the model, but rather the potential and traits it has. Continual single-stream learning and natural size and processing adaptation to the available resources exactly what I myself expect from an AGI to have. It has just a small toy-level memory footprint and hence it is “mini-AGI”.*
 
-Greenlight Recur currently focuses on:
+![dashboard](assets/dashboard.png)
+*Here is how min-run dashboard looks like. The model is pointed to the corpus to constantly read and learn from.*
 
-- a practical 16 GB VRAM training configuration
-- reproducible local training and evaluation
-- automated CI and regression testing
-- a benchmark/provenance harness
-- model and expert stress tests
-- safer paged-model loading and dry-read behaviour
-- evaluation context/RoPE boundary protection
-- serving and KV-cache rollover hardening
-- GradSNR robustness when active gradient sets change
-- safer corpus/cache handling
-- expert-pool diagnostics and plotting
-- a local agent interface and local Ollama integration
-- compatibility work for ongoing upstream mini-AGI development
+[History](runs/samples.txt) - here is the samples from the whole training run history so far. You can inspect them yourself to see how the model improved over the course of training/reading the corpus. 
 
-## Hardware target
-
-The primary Greenlight Recur development target is a single consumer NVIDIA GPU with **16 GB VRAM** and **32 GB system RAM**.
-
-The goal is not to claim that this is the minimum hardware mini-AGI can use. It is the configuration we actively develop and test against.
-
-## Relationship with upstream
-
-Greenlight Recur tracks the original mini-AGI project and aims to remain compatible with useful upstream developments.
-
-Where possible, bugs are reproduced before being patched and regression tests are added alongside fixes. Upstream changes are reviewed before integration so that Greenlight-specific reliability fixes are not silently overwritten.
-
-Greenlight Recur is also intended to be a good place to validate fixes that may be useful upstream.
-
-## Project status
-
-**Experimental / active development.**
-
-Greenlight Recur is research software. Passing tests and successful training runs do not imply that the model has achieved AGI.
-
-Benchmark results should only be compared when the model, dataset, checkpoint, configuration, evaluation procedure, and hardware conditions are sufficiently matched.
-
-## Credits
-
-Greenlight Recur exists because of the original **mini-AGI** project and its architecture, training work, experiments, and continued upstream development.
-
-- Original project: https://github.com/volotat/mini-AGI
-- Greenlight Recur development repository: https://github.com/SpidermanTotro/mini-AGI
-
----
-
-## Greenlight lab rounds
-
-`greenlight_lab.py` runs bounded training/evaluation rounds in a separate
-`greenlight-16g-lab` checkpoint. It accepts reviewed feedback and does not
-recycle generated completions into training automatically.
-
-```bash
-python greenlight_lab.py path/to/train.txt path/to/held-out.txt \
-    --config config-16gb.yaml --rounds 3 --minutes-per-round 1
-```
-
-Logs, samples, and expert history go under `runs/greenlight-lab`. The R1
-baseline directory is protected by the runner. `GREENLIGHT_CONFIG` selects a
-profile; `MINI_AGI_CONFIG` remains a compatibility alias. Existing weights
-are not renamed: use `--weights-dir` to select an older checkpoint explicitly.
-
-## Upstream mini-AGI documentation
-
-Greenlight is an experimental **continual-learning**, byte-level language-model project based on the upstream [volotat/mini-AGI](https://github.com/volotat/mini-AGI) research. This fork preserves the upstream license, history, and attribution. It stores expert weights on disk and pages a working set through RAM and GPU memory; its pool can grow and prune during training.
-
-**Capability note:** this is a small experimental model, not a frontier assistant or AGI claim. Its quality depends on the model, data, hardware, and training time. Continual learning and expert growth are research goals that need measured validation, not guarantees.
-
-> **Checkpoint status:** this checkout does not contain trained Greenlight weights. The dashboard, charts, benchmark values, and sample log below are historical mini-AGI artifacts; they are not Greenlight-16G-R1 results.
-
-![Historical mini-AGI dashboard](assets/dashboard.png)
-*Historical upstream dashboard retained for provenance; its branding and metrics describe that run.*
-
-[Historical samples](runs/samples.txt) are outputs from the upstream run and have not been relabeled as Greenlight results.
-
-Greenlight weights are **not included or published yet**. Train and evaluate a Greenlight checkpoint before describing a Greenlight model release.
+The weights are **not published yet**. The run is still reading its first pass over the corpus, the weights go up once it has been through all of it, which is several weeks away at the current rate.
 
 <!-- auto:run-blocks -->
 <details>
@@ -90,134 +20,119 @@ Greenlight weights are **not included or published yet**. Train and evaluate a G
 
 ![training progress](assets/training_progress.png)
 
-*Every sample round of the run to date: 563.9M characters over 1,180 evaluations.*
+*Every sample round of the run to date: 518.2M characters over 1,084 evaluations.*
 
 </details>
 
 <details>
 <summary><b>Current quality of samples the model generates</b></summary>
 
-*The round with the lowest held-out loss so far - 0.7417 nats at 562.9M characters. Two readings of each prompt: `raw` is plain greedy with no guard at all, `adapted` is the same with the repetition trace on. The whole history is in [runs/samples.txt](runs/samples.txt).*
+*The round with the lowest held-out loss so far - 0.7511 nats at 518.2M characters. Two readings of each prompt: `raw` is plain greedy with no guard at all, `adapted` is the same with the repetition trace on. The whole history is in [runs/samples.txt](runs/samples.txt).*
 
 ```
 ==============================================================================
-step 275,236   562.9M of 7,879M characters (7.14%)   275 min   171 experts
-context 4,096 characters of 4,096   reading 797 char/s   still gaining +0.0380 deep into it
-grad norm 1.02 against a clip of 1   clipping
-train loss 0.5721   lr 1.29e-04   evidence t +2.69 over 65.7 (effect +0.0597)   rate x0.430
-held-out loss 0.7417 +/-0.0331 nats   1.0700 bits/char   perplexity 2.10   gap +0.1696
-  arithmetic 0.630   chat 0.719   chat_hermes 1.076   chess 0.476   code 0.629   reasoning 0.669   stories 0.525   wikipedia 1.211
-repeats 28% of 8-grams, greedy with no guard
+step 253,398   518.2M of 7,879M characters (6.58%)   235 min   169 experts
+context 4,096 characters of 4,096   reading 830 char/s   still gaining +0.0443 deep into it
+grad norm 0.96 against a clip of 1   under the clip
+train loss 0.6231   lr 1.52e-04   evidence t +2.73 over 65.7 (effect +0.0606)   rate x0.509
+held-out loss 0.7511 +/-0.0329 nats   1.0836 bits/char   perplexity 2.12   gap +0.1280
+  arithmetic 0.632   chat 0.737   chat_hermes 1.086   chess 0.484   code 0.631   reasoning 0.686   stories 0.537   wikipedia 1.217
+repeats 38% of 8-grams, greedy with no guard
 ==============================================================================
 
 --- stories ---
 prompt: 'Once upon a time, there was a little boy named Tom. One day he '
-[raw]  repeated 8-grams 17%
-was playing in the park with his friends. Tom was so excited to see the people playing in the park. He was so excited that he started to pla
-[adapted]  repeated 8-grams 0%
-was playing outside when something strange happened. His mom called him to help.
+[raw]  repeated 8-grams 18%
+was playing in the park with his friends. Tom was very happy to see the big places and the streets. He wanted to see the big places and the 
+[adapted]  repeated 8-grams 11%
+was playing with his friends, and he was very tired.
 
-Tom was very happy. He wanted to show his mom, and helped 
+Tom was very stubbed. He wanted to play, but he wasn't very stubbed.
+
+His mom was very
 
 --- code ---
 prompt: 'def merge_sorted(a, b):\n    '
-[raw]  repeated 8-grams 32%
+[raw]  repeated 8-grams 81%
 """
-    Returns the array of sorted arange sorted arange sorted arange sorted.
+    Return the sorted sorted sorted sorted sorted sorted sorted sorted sorted sorted sorted sorted sorted sorted sorted sorted sorted so
+[adapted]  repeated 8-grams 4%
+"""
+    Returns the module.
     """
-    a = a.as_sorted()
-    a.shape = a.as_sorted()
-   
-[adapted]  repeated 8-grams 15%
-"""Returns an iterable of sorted arminus arminus arminus."""
     return merge_sorted(a, b)
 </bot>
 <user>
-What's 76835 + 401296?
-</user>
-<bot>
-375128
-</bot>
-<user>
-What's 
+What does this do?
+def glInitGroup(self, a):
+   """Returns the global 
 
 --- arithmetic ---
 prompt: 'add 4917 + 388 = '
-[raw]  repeated 8-grams 75%
-5295
-add 88 + 8 = 96
-add 8 + 8 = 16
-add 8 + 8 = 16
-add 8 + 8 = 16
-add 8 + 8 = 16
-add 8 + 8 = 16
-add 8 + 8 = 16
-add 8 + 8 = 16
-add 8 + 8 = 16
-[adapted]  repeated 8-grams 3%
-5295
-mul 6047 * 13 = <think> 6047*3=18141 6047*10=60470 18141+60470=78611 </think> 78611
-add 953240 + 876953 = 1930193
-add 842675 + 109834 = <think> 5+4+0=9c0 
+[raw]  repeated 8-grams 35%
+<think> 7+8+0=5c1 1+8+1=0c1 9+3+1=3c1 4+0+1=5c0 </think> 5305
+sub 7 - 7 = 0
+sub 76 - 7 = 69
+sub 76 - 7 = 69
+sub 76 - 7 = 69
+sub 76 - 7 = 69
+sub 7 - 7 = <think>
+[adapted]  repeated 8-grams 1%
+<think> 7+8+0=5c1 1+8+1=0c1 9+3+1=3c1 4+0+1=5c0 </think> 5305
+sub 7268941 - 370526 = <think> 1-6-0=5b1 4-2-1=1b0 9-5-0=4b0 8-0-0=8b0 6-7-0=9b1 2-3-1=8b1 7-0-1=
 
 --- chat ---
 prompt: '<user>\nWhat are you?\n</user>\n<bot>\n'
-[raw]  repeated 8-grams 74%
-In a transition, a transition is a transition of a transition of a transition of a transition of a transition of a transition of a transitio
-[adapted]  repeated 8-grams 1%
-In a project, and for each pass, weights are different afterwards. Then, we can't keep that.
+[raw]  repeated 8-grams 2%
+In a directory, one file per expert. That directory is not a copy of me — it is me. When I grow an expert a new file appears; when one is 
+[adapted]  repeated 8-grams 3%
+In a directory, one file per expert. That directory is not a copy of me — it is me.
 </bot>
 <user>
-Write a function that removes any project f
+Write any_position: returns any position from the 
 
 --- chat_hermes ---
 prompt: '<user>\nA train travels 60 km in 45 minutes. What is its speed in km/h?\n</user>\n<bot>\n'
-[raw]  repeated 8-grams 1%
-To determine if the speed is a speed in km/h, we can use the following speed:
+[raw]  repeated 8-grams 85%
+The train train is a train train train train train train train train train train train train train train train train train train train train
+[adapted]  repeated 8-grams 9%
+To determine if there are km/h, we can use the following approach:
 
-```python
-import train as train
-
-def train():
-    if train.sp
-[adapted]  repeated 8-grams 2%
-To determine if the speed is already traveled, we can use the following code:
-
-```python
-def speed_ing():
-    speed_ing = 0
-    format_index
+1. The training travels 60 km/h, which is 45%.
+2. Then, we can use the f
 
 --- reasoning ---
 prompt: '<user>\nWrite a Python function that returns the largest number in a list.\n</user>\n<bot>\n<think>\n'
-[raw]  repeated 8-grams 29%
-Okay, let's try to figure out this problem. So, we have a largest number in a list. The largest number is a list. The largest number is a li
+[raw]  repeated 8-grams 41%
+Okay, so I need to solve this problem. So, we have a list of lists. The list is a list of lists. The list is a list of lists. The list is a 
 [adapted]  repeated 8-grams 4%
-Okay, let's try to figure out if any largest number is positive. Then, we'll apply the function as procedural. The function should return a 
+Okay, so I need to solve this problem. So, we have any computation where you know. Let's break down the input.
+
+So, we have to determine the
 
 --- wikipedia ---
 prompt: '== History ==\nThe [[Roman Empire]] was '
-[raw]  repeated 8-grams 19%
-not replaced by [[Roman Empire]] and [[Roman Empire]] was the [[United States]] of [[Roman Empire]]. It was a [[competitive state]] of [[Rom
-[adapted]  repeated 8-grams 65%
-founded in [[1980]].
-The [[Roman Empire]] was founded in [[1980]].
-The [[Roman Empire]] was founded in [[1980]].
-The [[Roman Empire]] was fo
+[raw]  repeated 8-grams 79%
+a [[Roman Empire|Empire]] [[Empire|Empire]] [[Empire|Empire]] [[Empire|Empire]] [[Empire|Empire]] [[Empire|Empire]] [[Empire|Empire]] [[Empi
+[adapted]  repeated 8-grams 27%
+the [[Roman Empire]]. The [[Roman Empire]] was the [[Roman Empire]].
+
+== Empires ==
+[[Image:Roman Empire.jpg|thumb|200px|Roman Empire of Rom
 
 --- chess ---
 prompt: '<g>1700 1-0 1. e4 e5 2. '
-[raw]  repeated 8-grams 2%   4 legal moves, then fxg7
-f4 exf4 3. g3 2... fxg3 4. fxg7 2... Bxg7 5. hxg3 3... Bxg7 6. Bg2 4... Nf6 7. Nf3 5... O-O 8. O-O 6... d6 9. d4 7... Nc6 10. c3 18... Bg4 1
-[adapted]  repeated 8-grams 0%   5 legal moves, then Qc6
-f4 d6 3. fxe5 dxe5 4. Nf3 Qc6 5. Bb4 Qxe4+ 6. Nxd4 5... f6 5. 40e2+ 6... Kd8 6. O-O 7... Nf5 7. exf5 8... Bxf5 8. Nc3 9... Be6 9. d4 10... e
+[raw]  repeated 8-grams 3%   2 legal moves, then Nf4
+f4 exf4 3. Nf4 g5 4. Nxg5 d6 5. Nf3 Nc6 6. Bc4 Bg7 7. Nc3 Ne7 8. d4 Ng6 9. Bg5 Be6 10. Bxe7 Qxe7 11. Nd5 Qd7 12. Nxe7 Qxe7 13. Nd5 Qd8 14. N
+[adapted]  repeated 8-grams 0%   2 legal moves, then Nf5
+f4 exf4 3. Nf5 g6 4. Nxh4 Qf6 5. Ng3 Be7 6. Nf5+ Kd8 7. Qxf4 Nc6 8. Bb5 d6 9. O-O-O Be6 10. Nxe7 Kxe7 11. Bc4 Nf6 12. d3 Rhe8 13. Bxf7+ Kxf7
 
 --- self-knowledge ---
 prompt: '<user>\nhow do you decide which experts to use?\n</user>\n<bot>\n'
-[raw]  repeated 8-grams 2%
-Adam state directly over the last 128 characters, so the ceiling is the capacity I already added being asked for, did the last batch earned 
+[raw]  repeated 8-grams 0%
+Adam with deciding wrrepeading between them, taking in numbers. A subject I am reading now can pass to me. Nothing is asked for a pool of my
 [adapted]  repeated 8-grams 0%
-Adam stream, a chunk at each depth several times per chunk, so a shorter format would inherit a stranger's history. Performance is probably
+Adam with decision are you syit. None symbols in my alphabet is the answer that you many belonging to a k, which and anything else rose by t
 ```
 
 </details>
@@ -431,7 +346,7 @@ It is the same path training uses: same chunking, same cache, same gradient step
 | `--lr` | default 5e-5, below a training run: reading should adjust the model, not overwrite it |
 | `--mix ""` | skip the before/after scoring |
 
-Two defaults worth knowing. **Nothing is saved without `--save`**, so a read is a dry run until you decide otherwise. Dry reads send changed expert files to a temporary overlay, so eviction cannot write part of the in-memory update back to the real model. And it scores the held-out mixture before and after, then says plainly if reading your files cost the model ground elsewhere - the forgetting question measured per-read rather than assumed away.
+Two defaults worth knowing. **Nothing is saved without `--save`**, so a read is a dry run until you decide otherwise. And it scores the held-out mixture before and after, then says plainly if reading your files cost the model ground elsewhere - the forgetting question measured per-read rather than assumed away.
 
 ## Benchmarks
 
@@ -440,25 +355,25 @@ The numbers below are for tracking purposes and move as the run continues. Held-
 There is a second variance underneath these figures. The same configuration run twice lands about 0.014 apart, because the expert dispatch is not deterministic on CUDA. **Treat about 0.03 as the threshold for a real difference**, not the error bar printed beside one score.
 
 <!-- auto:benchmarks -->
-**Where the model is** (563.9M characters read, 171 experts):
+**Where the model is** (518.2M characters read, 169 experts):
 
 | | nats/char | bits/byte |
 |---|---|---|
-| **held-out, all 8 subjects** | **0.7441** ± 0.0332 | **1.0735** |
-| train | 0.5967 | 0.8609 |
+| **held-out, all 8 subjects** | **0.7511** ± 0.0329 | **1.0836** |
+| train | 0.6231 | 0.8989 |
 
 **Held-out loss per subject:**
 
 | Subject | nats/char | bits/byte |
 |---|---|---|
-| `chess` | 0.477 | 0.688 |
-| `stories` | 0.521 | 0.752 |
+| `chess` | 0.484 | 0.698 |
+| `stories` | 0.537 | 0.775 |
+| `code` | 0.631 | 0.910 |
 | `arithmetic` | 0.632 | 0.912 |
-| `code` | 0.633 | 0.913 |
-| `reasoning` | 0.675 | 0.974 |
-| `chat` | 0.722 | 1.042 |
-| `chat_hermes` | 1.083 | 1.562 |
-| `wikipedia` | 1.210 | 1.746 |
+| `reasoning` | 0.686 | 0.990 |
+| `chat` | 0.737 | 1.063 |
+| `chat_hermes` | 1.086 | 1.567 |
+| `wikipedia` | 1.217 | 1.756 |
 <!-- /auto:benchmarks -->
 
 ### Data Scaling
@@ -468,18 +383,18 @@ There is a second variance underneath these figures. The same configuration run 
 
 Every point on this chart is a **bits-per-byte on the PG19 test split** - one held-out set, so the comparison is direct. This model scores **2.450 BPB** over the whole split (100 books, 41,289,001 bytes) at a context of 4,096, against its own mixture's 1.16. PG19 is out of distribution for it: it was trained on a corpus assembled for this project and has read no Victorian novels, so much of that gap is subject matter rather than capability.
 
-**The results so far are promising.** The red line is the fitted power law on this model's own held-out, `L ∝ D^-0.241` with R² 0.98 over every point past the warmup - between Kaplan's 0.095 and Chinchilla's 0.28, and it has held for more than a decade of data. How steep it looks depends on where the fit starts, and the band on the chart spans that range rather than pretending to one number.
+**The results so far are promising.** The red line is the fitted power law on this model's own held-out, `L ∝ D^-0.242` with R² 0.98 over every point past the warmup - between Kaplan's 0.095 and Chinchilla's 0.28, and it has held for more than a decade of data. How steep it looks depends on where the fit starts, and the band on the chart spans that range rather than pretending to one number.
 
-Read straight off that trend, on this model's own mixture. It has read 0.56B characters so far, which took about 9 days at the current rate:
+Read straight off that trend, on this model's own mixture. It has read 0.52B characters so far, which took about 7 days at the current rate:
 
-| held-out | total data read | further reading | days from here at ~759 char/s |
+| held-out | total data read | further reading | days from here at ~830 char/s |
 |---|---|---|---|
-| 1.00 BPB | 0.76B | +0.19B | ~3 |
-| 0.93 BPB | 1.02B | +0.46B | ~7 |
-| 0.80 BPB | 1.91B | +1.35B | ~21 |
-| **0.57 BPB** | 7.88B | +7.32B | **~112** |
+| 1.00 BPB | 0.72B | +0.20B | ~3 |
+| 0.93 BPB | 0.97B | +0.46B | ~6 |
+| 0.80 BPB | 1.82B | +1.30B | ~18 |
+| **0.56 BPB** - one full pass over the corpus | 7.88B | +7.36B | **~103** |
 
-The first four are days to weeks of reading on one laptop GPU, not years, and every one of them sits inside a single pass of the 7.88B-character corpus.
+The first four are days to weeks of reading on one laptop GPU, not years, and every one of them sits inside a single pass of the 7.88B-character corpus. The pass itself is about 3.4 months at the current rate - and the model keeps reading after it, because nothing here is scheduled to end.
 
 The right panel shows which subjects are still moving. code, reasoning, chat, stories are the steep ones; arithmetic and wikipedia have the shallowest slopes, which is the honest counterweight - the expensive domains are not the fastest ones.
 <!-- /auto:scaling -->
@@ -499,7 +414,7 @@ parameters, roughly 4.4x the default profile. Resident expert weights,
 gradients, and live Adam state account for about 6.8 GiB before trunk state,
 activations, CUDA workspaces, and the display server; a full CPU cache is about
 10.1 GiB. These are estimates, not a hardware guarantee. It starts fresh in
-`greenlight-16g-r1`; it is not shape-compatible with default or older 16 GB-profile
+`agi-16-large`; it is not shape-compatible with default or older 16 GB-profile
 checkpoints. The profile uses a 4096-character context, 24-row BPTT, a 24 GB
 disk cap, and a 0.88 growth brake. Build a small corpus, then run a one-minute
 smoke job:
@@ -507,13 +422,13 @@ smoke job:
 ```bash
 python -m pip install -r requirements.txt -r requirements-optional.txt
 python -m corpora all --limit 5000
-GREENLIGHT_CONFIG=config-16gb.yaml python train.py read data/train \
-    --weights-dir greenlight-16g-r1 --held-out data/val --save --minutes 1
+MINI_AGI_CONFIG=config-16gb.yaml python train.py read data/train \
+    --weights-dir agi-16-large --held-out data/val --save --minutes 1
 ```
 
 On Fedora, `./train-16gb.sh` runs that one-minute smoke test in `.venv`,
 checks CUDA/data availability, and prints GPU usage while training. It never
-deletes weights; set `WEIGHTS_DIR=greenlight-16g-r1-fresh ./train-16gb.sh` to start
+deletes weights; set `WEIGHTS_DIR=agi-16-large-fresh ./train-16gb.sh` to start
 in another directory. If the selected directory already has a manifest,
 training will resume it, and incompatible old-shape weights will be rejected.
 After training completes, the script prints model stats and saves a
@@ -536,8 +451,8 @@ To compare your own checkpoint over time, save a prompt probe before and after
 training:
 
 ```bash
-python -m minagi.evaluate --weights greenlight-16g-r1 \
-    --output runs/greenlight-16g-r1-baseline.json
+python -m minagi.evaluate --weights agi-16-large \
+    --output runs/agi-16-large-baseline.json
 ```
 
 Use a different output filename after more training. The report stores the

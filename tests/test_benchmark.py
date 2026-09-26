@@ -2,25 +2,31 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from minagi.config import load
 
 from minagi.benchmark import activate_config, compare_reports, summarize_results
 
 
 class BenchmarkTests(unittest.TestCase):
     def test_activate_config_sets_absolute_environment_path(self):
-        old = os.environ.get("MINI_AGI_CONFIG")
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                path = Path(tmp) / "config.yaml"
-                path.write_text("model: {}\\n", encoding="utf-8")
-                activated = activate_config(path)
-                self.assertEqual(activated, str(path.resolve()))
-                self.assertEqual(os.environ["MINI_AGI_CONFIG"], str(path.resolve()))
-        finally:
-            if old is None:
-                os.environ.pop("MINI_AGI_CONFIG", None)
-            else:
-                os.environ["MINI_AGI_CONFIG"] = old
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
+                "GREENLIGHT_CONFIG": "/old/config.yaml",
+                "MINI_AGI_CONFIG": "/legacy/config.yaml"}):
+            path = Path(tmp) / "config.yaml"
+            path.write_text("model: {}\n", encoding="utf-8")
+            activated = activate_config(path)
+            self.assertEqual(activated, str(path.resolve()))
+            self.assertEqual(os.environ["MINI_AGI_CONFIG"], activated)
+            self.assertEqual(os.environ["GREENLIGHT_CONFIG"], activated)
+            self.assertEqual(load(), {"model": {}})
+
+    def test_environment_config_precedence_without_explicit_override(self):
+        with patch.dict(os.environ, {
+                "GREENLIGHT_CONFIG": "/greenlight.yaml",
+                "MINI_AGI_CONFIG": "/legacy.yaml"}):
+            self.assertEqual(activate_config(None), "/greenlight.yaml")
 
     def test_summary_counts_scored_cases(self):
         results = [

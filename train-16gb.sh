@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 PYTHON="${PYTHON:-python3}"
-WEIGHTS_DIR="${WEIGHTS_DIR:-agi-16-large}"
+WEIGHTS_DIR="${WEIGHTS_DIR:-greenlight-16g-r1}"
 SMOKE_MINUTES="${SMOKE_MINUTES:-1}"
 PASSES="${PASSES:-1}"
 VENV="$ROOT/.venv"
@@ -23,9 +23,9 @@ PY
 [[ -d data/train && -d data/val ]] || { echo "Build data/train and data/val first; see README.md." >&2; exit 1; }
 free -h
 df -h "$ROOT"
-export MINI_AGI_CONFIG="$ROOT/config-16gb.yaml"
+export GREENLIGHT_CONFIG="$ROOT/config-16gb.yaml"
 mkdir -p runs
-LOG="$ROOT/runs/train-agi-16-large.log"
+LOG="$ROOT/runs/train-greenlight-16g-r1.log"
 echo "Weights: $WEIGHTS_DIR (existing manifest resumes; use a new directory for fresh weights)"
 python -u train.py read data/train --weights-dir "$WEIGHTS_DIR" --held-out data/val \
   --save --passes "$PASSES" --minutes "$SMOKE_MINUTES" >"$LOG" 2>&1 &

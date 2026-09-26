@@ -493,5 +493,7 @@ def ramp_context(step, total, start, end, warm=0.35, granularity=256):
     if end <= start:
         return end
     f = min(1.0, step / max(total * warm, 1.0))
+    if f >= 1.0:
+        return end
     ctx = start * (end / start) ** f
     return int(max(start, min(end, round(ctx / granularity) * granularity)))
