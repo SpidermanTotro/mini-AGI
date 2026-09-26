@@ -72,7 +72,7 @@ class AppendJsonlTests(unittest.TestCase):
             path = os.path.join(td, "history.jsonl")
             append_jsonl(path, {"step": 1, "chars": 100}, compact=True)
             with open(path) as f:
-                self.assertEqual(f.read(), '{"step":1,"chars":100}\\n')
+                self.assertEqual(f.read(), '{"step":1,"chars":100}\n')
 
 
 if __name__ == "__main__":
