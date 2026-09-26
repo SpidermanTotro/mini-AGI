@@ -1,4 +1,7 @@
 import unittest
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
@@ -106,6 +109,113 @@ class ModelStressTests(unittest.TestCase):
         loss.backward()
         self.assertTrue(torch.isfinite(loss))
         self.assertTrue(torch.isfinite(model.pool.gate.grad).all())
+
+    def test_paged_checkpoint_restores_expert_weights_and_adam_moments(self):
+        import train
+        from minagi.create import create
+        from minagi.store import load, save
+
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+                "os.environ", {"MINI_AGI_CONFIG": ""}):
+            weights = Path(root) / "weights"
+            settings = create(
+                str(weights), seed=7, verbose=False, d_model=8, n_head=2,
+                trunk_d_ff=12, block=8, max_steps=2, experts=4,
+                resident=2, d_ff=16, depth=1, top_k=2)
+            model, _, pool, _ = train.build_paged(
+                str(weights), torch.device("cpu"), resident=2, ram_capacity=4)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+            pool.attach_optimiser(optimizer)
+            pool.swap_to([0, 1])
+
+            loss = sum(parameter.square().mean()
+                       for parameter in model.parameters())
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+
+            expected = {}
+            for slot, expert_id in enumerate(pool.slots):
+                expected[expert_id] = {}
+                for name in ("w1", "w3", "w2"):
+                    parameter = getattr(pool, name)
+                    state = optimizer.state[parameter]
+                    expected[expert_id][name] = parameter[slot].detach().clone()
+                    expected[expert_id][name + "_m"] = state["exp_avg"][slot].clone()
+                    expected[expert_id][name + "_v"] = state["exp_avg_sq"][slot].clone()
+            trunk_parameter = model.tok_emb.weight
+            expected_trunk_m = optimizer.state[trunk_parameter]["exp_avg"].clone()
+
+            pool.swap_to([2, 3])
+            save(model, str(weights), step=1, opt=optimizer, cfg=settings)
+
+            resumed, _, resumed_pool, _ = train.build_paged(
+                str(weights), torch.device("cpu"), resident=2, ram_capacity=4)
+            resumed_optimizer = torch.optim.AdamW(resumed.parameters(), lr=1e-2)
+            resumed_pool.attach_optimiser(resumed_optimizer)
+            load(resumed, str(weights), opt=resumed_optimizer,
+                 device=torch.device("cpu"))
+            resumed_pool.swap_to([0, 1])
+
+            for slot, expert_id in enumerate(resumed_pool.slots):
+                for name in ("w1", "w3", "w2"):
+                    parameter = getattr(resumed_pool, name)
+                    state = resumed_optimizer.state[parameter]
+                    torch.testing.assert_close(
+                        parameter[slot], expected[expert_id][name])
+                    torch.testing.assert_close(
+                        state["exp_avg"][slot], expected[expert_id][name + "_m"],
+                        atol=0.01, rtol=0.02)
+                    torch.testing.assert_close(
+                        state["exp_avg_sq"][slot], expected[expert_id][name + "_v"],
+                        atol=0.01, rtol=0.02)
+            torch.testing.assert_close(
+                resumed_optimizer.state[resumed.tok_emb.weight]["exp_avg"],
+                expected_trunk_m, atol=0.01, rtol=0.02)
+
+    def test_paged_growth_and_pruning_keep_router_rows_and_expert_files_aligned(self):
+        import torch.nn as nn
+        from minagi.paged import PagedPool
+        from minagi.pool import PooledMLP
+
+        with tempfile.TemporaryDirectory() as root:
+            pool = PagedPool(root, d_model=4, d_ff=8, n_experts=3,
+                             resident=1, ram_capacity=4, device="cpu",
+                             max_experts=3)
+            for expert_id in range(3):
+                value = float(expert_id + 1)
+                pool.tiers.put(expert_id, {
+                    "w1": torch.full((8, 4), value),
+                    "w3": torch.full((8, 4), value),
+                    "w2": torch.full((4, 8), value),
+                })
+            pool.tiers.flush()
+            pool.swap_to([0])
+            model = nn.Module()
+            model.pool = pool
+            model.mlp = PooledMLP(pool, d_model=4, top_k=1)
+            pool.attach_sites(model)
+
+            def make(expert_id, _source):
+                value = float(expert_id + 10)
+                return (torch.full((8, 4), value),
+                        torch.full((8, 4), value),
+                        torch.full((4, 8), value))
+
+            pool.add_experts(1, step=0, make=make)
+            self.assertEqual(pool.n_experts(), 4)
+            self.assertEqual(pool.segment_router.weight.shape[0], 4)
+            self.assertEqual(model.mlp.router.weight.shape[0], 4)
+            new_expert_file = Path(root) / "e00003.npz"
+            self.assertTrue(new_expert_file.exists())
+
+            self.assertEqual(pool.prune(step=100, survival=1), 3)
+            self.assertEqual(pool.n_experts(), 1)
+            self.assertEqual(pool.slots, [0])
+            self.assertEqual(pool.segment_router.weight.shape[0], 1)
+            self.assertEqual(model.mlp.router.weight.shape[0], 1)
+            self.assertTrue((Path(root) / "e00000.npz").exists())
+            self.assertFalse(new_expert_file.exists())
 
     def test_invalid_forward_inputs_fail_at_boundary(self):
         model = RecurCoder(tiny_config())

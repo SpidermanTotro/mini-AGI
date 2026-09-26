@@ -213,9 +213,10 @@ code checkout, not the downloaded data or trained model.
 - `requirements.txt` gives compatible version ranges, not a lockfile. PyTorch
   must be selected for the target CUDA/runtime; corpus builders also depend on
   remote dataset revisions that are not pinned here.
-- The added tests cover core model behavior, but not paged save/resume,
-  optimizer restoration, expert growth/pruning, context ramping, corpus
-  downloads, or HTTP serving end to end.
+- CPU tests now cover paged save/resume, expert and trunk optimizer restoration,
+  and a small expert growth/pruning lifecycle. They do not yet cover context
+  ramping, growth-brake decisions over a run, corpus downloads, or HTTP serving
+  end to end.
 - `.github/workflows/tests.yml` runs the unit suite and syntax compilation on
    pushes and pull requests, using CPU-only PyTorch. There is still no automated
    CUDA/memory stress job or declared package/build metadata; the project is
