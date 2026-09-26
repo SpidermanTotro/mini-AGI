@@ -18,7 +18,8 @@ class ReadOnlyPagedStorageTests(unittest.TestCase):
             self._write_expert(tmp, 0, 1.0)
             self._write_expert(tmp, 1, 2.0)
             path = os.path.join(tmp, "e00000.npz")
-            before = open(path, "rb").read()
+            with open(path, "rb") as source:
+                before = source.read()
 
             tiers = Tiers(tmp, 2, 2, ram_capacity=1,
                           device="cpu", read_only=True)
@@ -31,7 +32,8 @@ class ReadOnlyPagedStorageTests(unittest.TestCase):
             tiers.fetch(1)
             tiers.flush()
 
-            after = open(path, "rb").read()
+            with open(path, "rb") as source:
+                after = source.read()
             self.assertEqual(after, before)
             self.assertEqual(tiers.writebacks, 0)
             self.assertFalse(tiers.dirty)
