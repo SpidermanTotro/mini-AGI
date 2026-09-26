@@ -543,7 +543,15 @@ class RecurCoder(nn.Module):
         p.swap_to(self.canonical_experts())
         p.arm_observation()          # drop what the last text left behind
         self(look, caches=self.empty_caches(), pos_offset=0)
-        return self.choose_for(look, free=free)
+        # NO AUDITIONS AT A BOUNDARY. An audition is chosen by a clock, so it
+        # depends on what was read before - which is exactly the dependence a
+        # boundary is supposed to be free of. Auditions still happen on every
+        # chunk within the passage, which is fifteen of every sixteen.
+        aud, p.audition_slots = getattr(p, "audition_slots", 0), 0
+        try:
+            return self.choose_for(look, free=free)
+        finally:
+            p.audition_slots = aud
 
     @torch.no_grad()
     def canonical_experts(self):
@@ -719,7 +727,11 @@ def _load_dir(path, device, paged=None, read_only=False):
     with open(os.path.join(path, "manifest.json")) as f:
         man = json.load(f)
     if paged is None:
-        paged = bool(man.get("paged"))
+        # A freshly-created paged checkpoint can already have its experts/
+        # layout before the first paged save adds "paged": true to manifest.
+        # Prefer that on-disk evidence instead of materialising every expert.
+        paged = bool(man.get("paged")) or os.path.isdir(
+            os.path.join(path, "experts"))
     if paged:
         # build_paged lives in train.py; a caller in another directory (the
         # film's captures run from video/) needs the repo root on the path

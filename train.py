@@ -554,7 +554,40 @@ def _lanes(files, seed, roots=None, resume=0):
             for j, k in enumerate(sorted(by))]
 
 
+def _truncate_history(path, chars):
+    """Drop history rows past `chars` - they belong to a branch that was
+    abandoned, and every reader of this file assumes it moves forward."""
+    if not path or not os.path.exists(path) or chars <= 0:
+        return
+    try:
+        with open(path) as f:
+            rows = f.read().splitlines()
+        keep, dropped = [], 0
+        for line in rows:
+            try:
+                if json.loads(line).get("chars", 0) > chars:
+                    dropped += 1
+                    continue
+            except json.JSONDecodeError:
+                pass                       # keep anything unparseable
+            keep.append(line)
+        if dropped:
+            with open(path, "w") as f:
+                f.write("\n".join(keep) + ("\n" if keep else ""))
+            print(f"  history: dropped {dropped} row(s) past "
+                  f"{chars/1e6:.1f}M - superseded by this resume", flush=True)
+    except OSError as e:
+        print(f"  (history not trimmed: {e})", flush=True)
+
+
 def cmd_read(args):
+    if args.save:
+        return _cmd_read(args)
+    with weights_store.shadow(args.weights_dir) as dry_shadow:
+        return _cmd_read(args, dry_shadow)
+
+
+def _cmd_read(args, dry_shadow=None):
     """
     Point the model at files and let it read them.
 
@@ -613,7 +646,18 @@ def cmd_read(args):
     print(f"{info['files']} files, {info['characters']/1e6:.2f}M characters"
           + (f", {args.passes} passes" if args.passes > 1 else ""))
 
-    wdir = args.weights_dir
+    source_wdir = args.weights_dir
+    source_exists = os.path.exists(os.path.join(source_wdir, "core.npz"))
+    # A new dry model lives wholly in temporary storage. An existing model can
+    # load its immutable bundles in place; only changed expert files need a
+    # writable overlay.
+    wdir = source_wdir if source_exists or args.save else dry_shadow.path
+    expert_write_path = None
+    if not args.save:
+        expert_write_path = (os.path.join(dry_shadow.path, "experts")
+                             if source_exists else None)
+        print(f"  dry read: expert writes use a temporary overlay; "
+              f"{source_wdir} will not be modified")
     # No model here yet is a model that has not been made yet, not an error.
     # Everything about its shape is in config.yaml, so there is nothing to ask.
     #
@@ -623,27 +667,29 @@ def cmd_read(args):
     # sent every new reader straight into a missing core.npz.
     if not os.path.exists(os.path.join(wdir, "core.npz")):
         from minagi.create import create
-        leftovers = ([f for f in os.listdir(wdir) if f != "manifest.json"]
-                     if os.path.isdir(wdir) else [])
+        leftovers = ([f for f in os.listdir(source_wdir)
+                      if f != "manifest.json"]
+                     if os.path.isdir(source_wdir) else [])
         if leftovers:
             # Something is in there, but not a model. Wiping it is not this
             # function's decision to make.
             raise SystemExit(
-                f"{wdir} has no core.npz but is not empty: "
+                f"{source_wdir} has no core.npz but is not empty: "
                 f"{', '.join(sorted(leftovers)[:6])}. That is a partial or "
                 f"foreign weights directory - move it aside, or point "
                 f"--weights-dir somewhere else, and it will be created.")
-        if os.path.isdir(wdir):
-            print(f"{wdir} holds only a manifest - creating a fresh model "
+        if os.path.isdir(source_wdir):
+            print(f"{source_wdir} holds only a manifest - creating a fresh model "
                   f"from config.yaml (the manifest describes the released "
                   f"model, not this one, and is replaced)")
         else:
-            print(f"{wdir} does not exist - creating a fresh model from "
+            print(f"{source_wdir} does not exist - creating a fresh model from "
                   f"config.yaml")
         create(wdir, force=True)
         print()
-    model, cfg, pool, man = build_paged(wdir, device, args.resident,
-                                        args.ram_capacity, args.context)
+    model, cfg, pool, man = build_paged(
+        wdir, device, args.resident, args.ram_capacity, args.context,
+        expert_write_path=expert_write_path)
     # the best held-out this run has seen, for the optional notifier below.
     # Reads the manifest, so it cannot move above build_paged.
     best_val = float(man.get("val") or float("inf"))
@@ -887,6 +933,19 @@ def cmd_read(args):
         if len(early) < 8 or len(late) < 8:
             return None
         return float(np.mean(early) - np.mean(late))
+
+    # A RESUME SUPERSEDES WHATEVER THE OLD BRANCH WROTE. The history log is
+    # append-only and its character counter is not monotonic across a restart:
+    # reading on from a checkpoint leaves rows describing a model that no
+    # longer exists, sitting after the point being resumed from. Every reader
+    # then has to cope - the dashboard drew a seam, window_use reached back to
+    # the wrong row - and the file needs cleaning by hand every time an
+    # experiment is abandoned.
+    #
+    # So drop them here, once, at the point the run knows where it is
+    # resuming. Anything already past that mark describes a branch this run is
+    # not on.
+    _truncate_history(args.history, base_chars)
 
     # One lane per subject, rotated a window at a time.
     lanes = _lanes(files, args.shuffle_seed, args.paths,
@@ -1796,7 +1855,7 @@ def _split_trunk_pool(model):
 
 
 def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
-                read_only=False):
+                read_only=False, expert_write_path=None):
     """
     Load the model with its pool on disk rather than in VRAM.
 
@@ -1810,6 +1869,10 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
     tool that inspects a directory a training run may own - paging an expert in
     marks it dirty whether or not anything touched it, so a plain read would
     otherwise write expert files back under the run.
+
+    expert_write_path keeps reads backed by `wdir` while directing changed
+    expert files elsewhere. Dry training uses it to preserve paging semantics
+    without allowing eviction writeback into the source checkpoint.
     """
     from minagi.paged import PagedPool
     with open(os.path.join(wdir, "manifest.json")) as f:
@@ -1824,7 +1887,7 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
     # written before this existed carries no value for it and would otherwise
     # get the dataclass default, which is right but silent; taking it from the
     # config every load means the number in the file is the number in effect.
-    _key_floor = None
+    _key_floor = _audition = None
     try:
         from minagi.config import load as _load_cfg, get as _get_cfg
         _c = _load_cfg()
@@ -1835,6 +1898,7 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
         # than in cmd_read so that everything opening a paged model - serving,
         # the probes - schedules it the way the run does.
         _key_floor = _get_cfg(_c, "pool.key_floor", None)
+        _audition = _get_cfg(_c, "pool.audition_slots", None)
     except Exception:
         pass
     # the per-token router keeps one row per EXPERT, not per VRAM slot, so it
@@ -1861,7 +1925,8 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
     pool = PagedPool(os.path.join(wdir, "experts"), cfg.d_model, cfg.pool_d_ff,
                      int(man["n_experts"]), resident=resident,
                      ram_capacity=ram_capacity, device=device,
-                     read_only=read_only).to(device)
+                     read_only=read_only,
+                     write_path=expert_write_path).to(device)
     for m in model.modules():
         if isinstance(m, PooledMLP):
             m._pool[0] = pool
@@ -1869,6 +1934,8 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
     pool.attach_sites(model)
     if _key_floor is not None:
         pool.key_floor = float(_key_floor)
+    if _audition is not None:
+        pool.audition_slots = int(_audition)
     pool.load_telemetry(man.get("telemetry"))
     ever = cfgd.get("pool_ever")
     if ever:
@@ -2299,4 +2366,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -61,8 +61,9 @@ class Tiers:
     """
 
     def __init__(self, path, d_model, d_ff, ram_capacity=256, device="cpu",
-                 read_only=False):
+                 read_only=False, write_path=None):
         self.path = path
+        self.write_path = write_path or path
         self.d_model, self.d_ff = d_model, d_ff
         self.ram = OrderedDict()             # id -> dict of CPU tensors
         self.ram_capacity = ram_capacity
@@ -77,7 +78,25 @@ class Tiers:
         self.reads = self.hits = self.evictions = self.writebacks = 0
 
     def _file(self, i):
-        return os.path.join(self.path, "e%05d.npz" % i)
+        name = "e%05d.npz" % i
+        if self.write_path != self.path:
+            changed = os.path.join(self.write_path, name)
+            if os.path.exists(changed):
+                return changed
+        return os.path.join(self.path, name)
+
+    def _write_file(self, i):
+        return os.path.join(self.write_path, "e%05d.npz" % i)
+
+    def delete(self, i):
+        """Delete an expert only from the writable layer."""
+        if self.read_only:
+            raise RuntimeError("read-only pool tried to delete e%05d.npz" % i)
+        f = self._write_file(i)
+        if os.path.exists(f):
+            os.remove(f)
+        self.ram.pop(i, None)
+        self.dirty.discard(i)
 
     def _from_disk(self, i):
         """
@@ -139,9 +158,11 @@ class Tiers:
         # measurement for both.
         arrays = {k: (pack_bf16(v) if is_moment(k) else v.to(torch.float32).numpy())
                   for k, v in ent.items() if torch.is_tensor(v)}
-        tmp = self._file(i) + ".tmp.npz"
+        os.makedirs(self.write_path, exist_ok=True)
+        target = self._write_file(i)
+        tmp = target + ".tmp.npz"
         np.savez(tmp, **arrays)
-        os.replace(tmp, self._file(i))
+        os.replace(tmp, target)
         self.writebacks += 1
 
     def flush(self):
@@ -175,7 +196,7 @@ class PagedPool(nn.Module):
 
     def __init__(self, path, d_model, d_ff, n_experts, resident=16,
                  ram_capacity=256, device="cpu", max_experts=1_000_000,
-                 read_only=False):
+                 read_only=False, write_path=None):
         super().__init__()
         self.path = path
         self.d_model, self.d_ff = d_model, d_ff
@@ -184,7 +205,7 @@ class PagedPool(nn.Module):
         self._n = n_experts
         self.read_only = read_only
         self.tiers = Tiers(path, d_model, d_ff, ram_capacity, device,
-                           read_only=read_only)
+                           read_only=read_only, write_path=write_path)
 
         # the VRAM slots - fixed in number, their contents swapped
         self.w1 = nn.Parameter(torch.zeros(self.resident, d_ff, d_model))
@@ -243,6 +264,20 @@ class PagedPool(nn.Module):
         # a resident is seen every chunk it stays, so measuring dwell against
         # last_seen makes every resident permanently too young to evict and
         # the working set can never move at all
+        # WHEN AN EXPERT WAS LAST GIVEN A TURN IT DID NOT EARN. Auditions
+        # cycle by this rather than by last_seen, because an audition
+        # deliberately does NOT reset last_seen - the prune clock - and an
+        # expert picked by staleness alone would therefore stay the stalest
+        # and be picked again every boundary forever.
+        self.register_buffer("last_try", torch.zeros(n_experts),
+                             persistent=False)
+        # slots of the working set reserved each boundary for the expert that
+        # has gone longest without a turn. 0 disables it, which is the
+        # default and is bit-identical to having no such mechanism.
+        self.audition_slots = 0
+        self._auditioned = ()
+        self._fit_raw = None
+        self._suppressed = None
         self.register_buffer("since", torch.zeros(n_experts),
                              persistent=False)
         # How many times each expert has been brought onto the card, over the
@@ -543,6 +578,19 @@ class PagedPool(nn.Module):
                     born = self.born[:self._n]
                     young = (born > 0) & ((self.now - born) < self.trial)
                     earned = torch.where(young, torch.ones_like(earned), earned)
+                # WHAT THE TEXT WANTS, BEFORE ANY DISCOUNT. `sim` here is
+                # fit alone; a line below it is multiplied by `earned` and an
+                # expert that has earned nothing disappears under it. That
+                # discounted number is right for choosing a working set and
+                # useless for choosing who to audition, which is precisely a
+                # question about the experts the discount is burying.
+                raw = torch.zeros_like(want)
+                rtop = torch.topk(sim, k, dim=-1)
+                raw.index_add_(0, rtop.indices.reshape(-1),
+                               rtop.values.reshape(-1).to(raw.dtype))
+                self._fit_raw = raw
+                self._suppressed = earned <= self.key_floor + 1e-6
+
                 sim = sim * earned
                 top = torch.topk(sim, k, dim=-1)
                 fit = torch.zeros_like(want)
@@ -594,7 +642,19 @@ class PagedPool(nn.Module):
             self.ever = torch.cat([
                 self.ever, torch.zeros(self._n - self.ever.numel(),
                                        dtype=torch.bool, device=self.ever.device)])
+        # AN AUDITION LASTS ONE CHUNK. Whoever was auditioned last time gives
+        # the slot back now and has to win it through the ordinary path like
+        # anything else. Without this they simply become incumbents, `margin`
+        # keeps them, and the next swap_to counts them as an ordinary resident
+        # and resets the prune clock - which is how the first version of this
+        # made the pool immortal while looking correct on a single swap.
+        prev_aud = set(getattr(self, "_auditioned", ()) or ())
         cur = [e for e in self.slots if e >= 0]
+        if prev_aud and len(cur) >= k:
+            keep = [e for e in cur if e not in prev_aud]
+            order = [int(e) for e in torch.argsort(want, descending=True).tolist()
+                     if e not in keep]
+            cur = (keep + order)[:k]          # vacated slots go to what is wanted
         if len(cur) < k:                                # cold card: fill it
             order = torch.argsort(want, descending=True).tolist()
             cur = (cur + [e for e in order if e not in cur])[:k]
@@ -626,6 +686,43 @@ class PagedPool(nn.Module):
         if never and evictable:
             weakest = min(evictable, key=lambda e: float(score[e]))
             plan[plan.index(weakest)] = never[0]
+            evictable.remove(weakest)
+
+        # AUDITIONS. Nothing above ever favours an expert because it has been
+        # idle: demand scales fit by what an expert has earned, and `margin`
+        # makes incumbency sticky on top of that, so an expert that falls off
+        # the card stops training its router row and cannot argue for itself
+        # again. It then ages out and is pruned - having failed by never
+        # being asked rather than by being asked and adding nothing.
+        #
+        # An audition is one slot, given to whichever expert has gone longest
+        # without a turn. It buys a hearing, not a reprieve: swap_to leaves
+        # last_seen alone for these, so an expert that earns nothing keeps
+        # ageing and is still pruned on schedule. Only being genuinely wanted
+        # resets that clock.
+        self._auditioned = ()
+        if self.audition_slots and evictable and not never:
+            free = [e for e in range(self._n) if e not in plan]
+            raw, sup = self._fit_raw, self._suppressed
+            if free and raw is not None and sup is not None:
+                # THE ONES THE DISCOUNT IS BURYING. An expert is worth a
+                # hearing when this text wants it and the only thing in its
+                # way is that it has earned nothing - not merely because it
+                # has been idle a long time, which says nothing about whether
+                # it is any use here. Ranked by undiscounted fit, restricted
+                # to those sitting on the key_floor.
+                pick = [e for e in free if bool(sup[e])]
+                pick.sort(key=lambda e: -float(raw[e]))
+                picked = []
+                for e in pick[:int(self.audition_slots)]:
+                    if not evictable or float(raw[e]) <= 0:
+                        break
+                    weakest = min(evictable, key=lambda q: float(score[q]))
+                    plan[plan.index(weakest)] = e
+                    evictable.remove(weakest)
+                    self.last_try[e] = self.segments
+                    picked.append(e)
+                self._auditioned = tuple(picked)
         return plan[:k]
 
     @torch.no_grad()
@@ -684,9 +781,17 @@ class PagedPool(nn.Module):
         if self.segments % 8 == 0:
             # a resident expert is still learning, so its description drifts
             self.refresh_keys()
+        # AN AUDITION IS NOT A REPRIEVE. last_seen is the clock prune deletes
+        # on, so resetting it here for an expert that was admitted because it
+        # had been idle - rather than because anything wanted it - would make
+        # the pool immortal: every dead expert would be auditioned, look
+        # freshly seen, and never be removed. It keeps ageing; only a normal
+        # admission, which means demand actually asked for it, stops that.
+        audition = set(getattr(self, "_auditioned", ()) or ())
         for i in ids:
             if 0 <= i < self.last_seen.numel():
-                self.last_seen[i] = self.segments
+                if i not in audition:
+                    self.last_seen[i] = self.segments
                 self.ever[i] = True
 
         # An expert already on the card stays in the slot it is in, and only
@@ -859,6 +964,8 @@ class PagedPool(nn.Module):
         # a new expert has never been seen, so it goes to the front of the
         # exploration queue rather than the back
         self.last_seen = grow_vec(self.last_seen, 0.0)
+        self.last_try = grow_vec(self.last_try, 0.0)
+        self._fit_raw = self._suppressed = None
         self.use = grow_vec(self.use)
         self.age = grow_vec(self.age)
         self.born = grow_vec(self.born, step)
@@ -968,18 +1075,14 @@ class PagedPool(nn.Module):
         for i in range(self._n):
             if i not in kept:
                 u = self._f(i)
-                f = self.tiers._file(u)
-                if os.path.exists(f):
-                    os.remove(f)
-                self.tiers.ram.pop(u, None)
-                self.tiers.dirty.discard(u)
+                self.tiers.delete(u)
 
         idx = torch.tensor(keep, dtype=torch.long, device=self.gate.device)
         opt = getattr(self, "_opt", None)
         old_gate = self.gate
         self.gate = nn.Parameter(self.gate.data[idx].clone())
         self._carry(opt, old_gate, self.gate, idx=idx)
-        for nm in ("use", "age", "born", "gate_seen", "last_seen", "ever",
+        for nm in ("use", "age", "born", "gate_seen", "last_seen", "last_try", "ever",
                    "since", "admits", "uid"):
             setattr(self, nm, getattr(self, nm)[idx].clone())
         self.keys = self.keys[idx].clone()
@@ -1003,6 +1106,8 @@ class PagedPool(nn.Module):
             self._carry(opt, w, fresh.weight, idx=idx)
         remap = {old_i: new_i for new_i, old_i in enumerate(keep)}
         self.slots = [remap.get(s, -1) for s in self.slots]
+        self._auditioned = tuple(remap[i] for i in self._auditioned if i in remap)
+        self._fit_raw = self._suppressed = None
         self._n = len(keep)
         return gone
 

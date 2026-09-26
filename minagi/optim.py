@@ -30,17 +30,30 @@ class GradSNR:
         self.m = None
         self.sq = 0.0
         self.n = 0
+        self._grad_signature = None
 
     @torch.no_grad()
     def observe(self, params):
-        gs = [p.grad for p in params if p.grad is not None]
-        if not gs:
+        active = [(i, p.grad) for i, p in enumerate(params) if p.grad is not None]
+        if not active:
             return None
-        flat = torch.cat([g.detach().float().reshape(-1) for g in gs])
-        self.m = flat.clone() if self.m is None else \
-            self.m.mul_(self.beta).add_(flat, alpha=1 - self.beta)
+        signature = tuple((i, tuple(g.shape)) for i, g in active)
+        flat = torch.cat([g.detach().float().reshape(-1) for _, g in active])
+
+        # Recurrence and conditional paths can change which parameters receive
+        # gradients from one step to the next.  An EMA only has meaning while
+        # its coordinates describe the same parameters, so start a new window
+        # whenever that active set changes.
+        if self.m is None or signature != self._grad_signature:
+            self.m = flat.clone()
+            self.sq = float((flat * flat).sum())
+            self.n = 1
+            self._grad_signature = signature
+            return self.ratio()
+
+        self.m.mul_(self.beta).add_(flat, alpha=1 - self.beta)
         s = float((flat * flat).sum())
-        self.sq = s if self.n == 0 else self.beta * self.sq + (1 - self.beta) * s
+        self.sq = self.beta * self.sq + (1 - self.beta) * s
         self.n += 1
         return self.ratio()
 
