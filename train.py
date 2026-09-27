@@ -2344,17 +2344,10 @@ def main():
                     help="give up after this many reverts rather than thrash")
     st.set_defaults(fn=cmd_stream)
 
-    p = sub.add_parser("ponder-probe")
-    p.add_argument("--ckpt", default="weights",
-                    help="the weights directory, or a .pt checkpoint")
-    p.add_argument("--data", default="data_math_char")
-    p.add_argument("--task", default="add")
-    p.add_argument("--n", type=int, default=20)
-    p.add_argument("--max-digits", type=int, default=8)
-    p.set_defaults(fn=cmd_ponder_probe)
+    from minagi.training.cli import add_ponder_probe_command, dispatch
+    add_ponder_probe_command(sub, cmd_ponder_probe)
 
     args = ap.parse_args()
-    from minagi.training.cli import dispatch
     sys.exit(dispatch(args))
 
 
