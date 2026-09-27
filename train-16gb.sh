@@ -39,5 +39,7 @@ done
 wait "$TRAIN_PID"
 echo "Training finished. Log: $LOG"
 python -m minagi.store "$WEIGHTS_DIR"
+echo "Verifying complete Greenlight model artifact..."
+python -m minagi.verify_model "$WEIGHTS_DIR"
 EVAL_OUTPUT="$ROOT/runs/$(basename "$WEIGHTS_DIR")-eval-$(date +%Y%m%d-%H%M%S).json"
 python -m minagi.evaluate --weights "$WEIGHTS_DIR" --output "$EVAL_OUTPUT"
