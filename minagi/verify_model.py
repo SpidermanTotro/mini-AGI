@@ -1,0 +1,69 @@
+"""Validate the on-disk model artifact before calling a run complete."""
+
+import argparse
+import json
+from pathlib import Path
+
+
+REQUIRED_BUNDLES = ("manifest.json", "core.npz", "routers.npz")
+
+
+def inspect_model_artifact(path):
+    """Return a compact model-artifact report or raise on an incomplete model."""
+    root = Path(path)
+    missing = [name for name in REQUIRED_BUNDLES if not (root / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"incomplete model artifact {root}: missing {', '.join(missing)}"
+        )
+
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    entries = manifest.get("experts")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("model manifest contains no expert file inventory")
+
+    declared = int(manifest.get("n_experts", len(entries)))
+    if declared != len(entries):
+        raise ValueError(
+            f"model manifest declares {declared} experts but inventories "
+            f"{len(entries)}"
+        )
+
+    missing_experts = [
+        entry.get("file")
+        for entry in entries
+        if not entry.get("file")
+        or not (root / "experts" / entry["file"]).is_file()
+    ]
+    if missing_experts:
+        raise FileNotFoundError(
+            "model artifact is missing expert files: "
+            + ", ".join(str(name) for name in missing_experts[:8])
+        )
+
+    return {
+        "path": str(root),
+        "step": manifest.get("step"),
+        "val": manifest.get("val"),
+        "read_chars": manifest.get("read_chars"),
+        "n_experts": declared,
+        "d_model": manifest.get("d_model"),
+        "d_ff": manifest.get("d_ff"),
+        "paged": bool(manifest.get("paged")),
+        "total_bytes": manifest.get("total_bytes"),
+    }
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Verify that a Greenlight weights directory is a complete model artifact"
+    )
+    parser.add_argument("weights")
+    args = parser.parse_args(argv)
+    report = inspect_model_artifact(args.weights)
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
