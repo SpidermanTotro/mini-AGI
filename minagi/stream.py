@@ -352,7 +352,7 @@ class FolderEvaluator:
         self.segment_chunks = segment_chunks
         self.groups = {}
         subs = [d for d in sorted(os.listdir(root))
-                if os.path.isdir(os.path.join(root, d))] if per_domain else []
+                if os.path.isdir(os.path.join(root, d))] if per_domain and os.path.isdir(root) else []
         if subs:
             for d in subs:
                 self.groups[d] = collect([os.path.join(root, d)])
