@@ -42,7 +42,7 @@ training:
   save_every: 5
   precision: bf16
   chunk: 2048
-  lr: 3.0e-4
+  lr: 1.0e-5                # lower base rate; validate learning on held-out data
   trunk_lr_mult: 0.1
   weight_decay: 0.1
   clip: 1.0

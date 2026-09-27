@@ -7,6 +7,8 @@ PYTHON="${PYTHON:-python3}"
 WEIGHTS_DIR="${WEIGHTS_DIR:-greenlight-16g-r1}"
 SMOKE_MINUTES="${SMOKE_MINUTES:-1}"
 PASSES="${PASSES:-1}"
+# Match the 16 GB profile; override per run with LR=3e-4 ./train-16gb.sh.
+LR="${LR:-1e-5}"
 VENV="$ROOT/.venv"
 
 [[ -x "$VENV/bin/python" ]] || "$PYTHON" -m venv "$VENV"
@@ -28,7 +30,7 @@ mkdir -p runs
 LOG="$ROOT/runs/train-greenlight-16g-r1.log"
 echo "Weights: $WEIGHTS_DIR (existing manifest resumes; use a new directory for fresh weights)"
 python -u train.py read data/train --weights-dir "$WEIGHTS_DIR" --held-out data/val \
-  --save --passes "$PASSES" --minutes "$SMOKE_MINUTES" >"$LOG" 2>&1 &
+  --save --passes "$PASSES" --minutes "$SMOKE_MINUTES" --lr "$LR" >"$LOG" 2>&1 &
 TRAIN_PID=$!
 while kill -0 "$TRAIN_PID" 2>/dev/null; do
   date '+%H:%M:%S'
