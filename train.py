@@ -1970,47 +1970,6 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
     return model, cfg, pool, man
 
 
-def cmd_ponder_probe(args):
-    """
-    Does the model actually spend more computation on harder problems?
-
-    This is the falsifiable claim behind adaptive depth. If mean halting steps
-    are flat across difficulty, the halting head learned nothing useful and the
-    mechanism is decoration. Reported per digit count, which is the cleanest
-    difficulty axis available.
-    """
-    import corpora.arithmetic as math_data
-    from minagi.tokenizer import load_tokenizer
-    device = torch.device(args.device)
-    model, ck = load_recur(args.ckpt, device)
-    tok = load_tokenizer(args.data)
-    import random
-    rng = random.Random(0)
-    print(f"{'digits':>7} {'mean steps':>11} {'max':>5}  {'example':<34}")
-    rows = []
-    for d in range(1, args.max_digits + 1):
-        steps = []
-        example = ""
-        for _ in range(args.n):
-            fn, cap, _ = math_data.TASKS[args.task]
-            line = fn(rng, min(d, cap), False)
-            prompt = line.rpartition("=")[0] + "="
-            example = example or prompt
-            ids = torch.tensor([tok.encode(prompt).ids], device=device)
-            with torch.no_grad():
-                _, extra = model(ids, collect=True)
-            steps.append(float(extra["steps"][0, -1]))
-        rows.append((d, float(np.mean(steps)), max(steps)))
-        print(f"{d:>7} {np.mean(steps):>11.2f} {max(steps):>5.0f}  {example:<34}")
-    lo = rows[0][1]
-    hi = rows[-1][1]
-    print(f"\n1-digit {lo:.2f} steps -> {args.max_digits}-digit {hi:.2f} steps "
-          f"({hi-lo:+.2f})")
-    print("adaptive compute is working" if hi - lo > 0.15 else
-          "FLAT - the halting head is not responding to difficulty")
-    return 0
-
-
 def main():
     ap = argparse.ArgumentParser(
         description="train mini-AGI: read files continually, or stream a "
@@ -2345,7 +2304,8 @@ def main():
     st.set_defaults(fn=cmd_stream)
 
     from minagi.training.cli import add_ponder_probe_command, dispatch
-    add_ponder_probe_command(sub, cmd_ponder_probe)
+    from minagi.training.ponder_probe import run_ponder_probe
+    add_ponder_probe_command(sub, run_ponder_probe)
 
     args = ap.parse_args()
     sys.exit(dispatch(args))
