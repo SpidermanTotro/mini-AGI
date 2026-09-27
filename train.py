@@ -722,7 +722,7 @@ def _cmd_read(args, dry_shadow=None):
     ev = (FolderEvaluator(model, args.held_out, args.chunk, cfg.block, device,
                           segment_chunks=max(1, args.segment_chunks
                                              // max(1, args.chunk)))
-          if args.held_out and os.path.isdir(args.held_out) else None)
+          if args.held_out and os.path.exists(args.held_out) else None)
     before = None
     if ev is not None:
         v = ev.run(eval_steps); se = v.pop("stderr", 0.0)

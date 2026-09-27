@@ -78,12 +78,35 @@ def summarize_results(results):
 def compare_reports(base, candidate):
     b = base.get("summary", {})
     c = candidate.get("summary", {})
+    mismatches = []
+    for section, fields in {
+        "provenance": ("seed",), "model": ("precision", "context"),
+        "system": ("device", "gpu", "torch"),
+        "timing": ("max_new_tokens_per_case",),
+    }.items():
+        for field in fields:
+            if base.get(section, {}).get(field) != candidate.get(section, {}).get(field):
+                mismatches.append(f"{section}.{field}")
+    if (base.get("provenance", {}).get("config", {}).get("sha256") !=
+            candidate.get("provenance", {}).get("config", {}).get("sha256")):
+        mismatches.append("config.sha256")
+    case_key = lambda r: [(x.get("name"), x.get("prompt"), x.get("expected"))
+                          for x in r.get("results", [])]
+    if case_key(base) != case_key(candidate):
+        mismatches.append("prompt cases")
+    bh, ch = base.get("held_out") or {}, candidate.get("held_out") or {}
+    if any(bh.get(k) != ch.get(k) for k in ("sha256", "chunk", "chunks")):
+        mismatches.append("held-out protocol")
+    bv, cv = bh.get("scores", {}).get("all"), ch.get("scores", {}).get("all")
     return {
+        "protocol_matches": not mismatches,
+        "mismatches": mismatches,
+        "held_out_loss_delta": cv - bv if bv is not None and cv is not None and not mismatches else None,
         "base_commit": base.get("provenance", {}).get("commit"),
         "candidate_commit": candidate.get("provenance", {}).get("commit"),
         "exact_match_accuracy_delta": (
             c.get("exact_match_accuracy") - b.get("exact_match_accuracy")
-            if c.get("exact_match_accuracy") is not None
+            if not mismatches and c.get("exact_match_accuracy") is not None
             and b.get("exact_match_accuracy") is not None
             else None
         ),
@@ -94,18 +117,26 @@ def compare_reports(base, candidate):
 
 def main():
     parser = argparse.ArgumentParser(description="Run a reproducible mini-AGI benchmark")
-    parser.add_argument("--weights", default="agi-16-large")
-    parser.add_argument("--config", default=os.environ.get("MINI_AGI_CONFIG"))
+    parser.add_argument("--weights", default="greenlight-16g-r1")
+    parser.add_argument("--config", default=None)
     parser.add_argument("--output", default="runs/benchmark.json")
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--precision", choices=("bf16", "fp16", "fp32"), default="bf16")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--compare")
+    parser.add_argument("--held-out", help="held-out text file or directory")
+    parser.add_argument("--eval-chunks", type=int, default=32)
     args = parser.parse_args()
 
+    if args.eval_chunks <= 0:
+        parser.error("--eval-chunks must be positive")
     if args.max_new_tokens <= 0:
         parser.error("--max-new-tokens must be positive")
+
+    args.config = activate_config(args.config)
+    if args.config and not Path(args.config).is_file():
+        parser.error(f"config does not exist: {args.config}")
 
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
@@ -122,8 +153,28 @@ def main():
         torch.cuda.synchronize(device)
     elapsed = time.perf_counter() - started
 
+    held_out = None
+    if args.held_out:
+        from .ingest import collect
+        from .stream import FolderEvaluator
+        files = collect([args.held_out], cache=None)
+        if not files:
+            parser.error("held-out path contains no readable text")
+        digest = hashlib.sha256()
+        for path in sorted(files):
+            with open(path, 'rb') as source:
+                digest.update(hashlib.file_digest(source, 'sha256').digest())
+        chunk = min(512, model.cfg.block)
+        scores = FolderEvaluator(model, args.held_out, chunk, model.cfg.block,
+                                 device, per_domain=False).run(args.eval_chunks)
+        if "all" not in scores:
+            parser.error("held-out text is too short to score (need at least 8 tokens)")
+        held_out = {"sha256": digest.hexdigest(), "chunk": chunk,
+                    "chunks": args.eval_chunks, "scores": scores}
+
     report = {
         "schema_version": 1,
+        "held_out": held_out,
         "provenance": {
             "commit": _git_commit(),
             "weights": args.weights,

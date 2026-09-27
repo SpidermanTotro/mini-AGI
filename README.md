@@ -4,6 +4,64 @@
 
 The original mini-AGI architecture and research project are by its upstream author. Greenlight Recur builds on that work rather than claiming to replace it.
 
+## Greenlight command line
+
+Install the dependencies into your active Python environment:
+
+```bash
+python -m pip install -r requirements.txt
+python greenlight.py doctor
+python greenlight.py --help
+```
+
+Use a CUDA-enabled PyTorch build for NVIDIA training. The doctor command reports
+whether this environment can actually use CUDA. No cloud service is needed.
+
+Train for **up to six minutes or one corpus pass**, saving the result:
+
+```bash
+python greenlight.py train --train data/train --held-out data/val \
+  --weights greenlight-16g-r1 --minutes 6 --out runs/r1-first
+```
+
+Compare your saved old checkpoint with a separately trained copy:
+
+```bash
+python greenlight.py compare --old greenlight-16g-r1 --new greenlight-16g-r2 \
+  --train data/train --held-out data/val --minutes 6 --out runs/r1-vs-r2
+```
+
+The old checkpoint is read-only. `--new` and `--out` must be new paths. Allow disk
+space for a complete checkpoint copy, including optimizer state. Stop other
+training processes that write the old checkpoint before comparison. This compares
+**before/after continued training using the current code**, not two code revisions
+or architectures. Resuming uses the saved model shape; it does not resize old weights
+to the selected profile. `--passes` controls the corpus-pass limit; `--minutes`
+limits the training loop, not model loading or evaluation time.
+
+Reports `old.json` and `new.json` include prompt outputs, held-out loss, corpus
+fingerprint, settings, and comparison deltas. Negative held-out loss delta is lower
+loss; a tiny change on a small sample is not evidence of general capability. Keep
+training and held-out text separate. Existing checkpoints resume in `train`;
+choose a new weights path for fresh training. Choose a new output path per run.
+
+Use your own trained Greenlight model from the terminal:
+
+```bash
+python greenlight.py generate --weights greenlight-16g-r2 --prompt "The dragon"
+```
+
+Or use the separate Ollama tool assistant with an already installed local model:
+
+```bash
+python greenlight.py chat --model qwen3:8b --workspace .
+```
+
+Ollama must be running locally. This assistant uses the selected Ollama model;
+it does not load your Greenlight checkpoint. For small CPU smoke tests, use a tiny
+config with `--device cpu --precision fp32`; the 16 GB profile is intended for GPU
+training. See [the CLI repair log](docs/CLI-TRAINING-2026-09-27.md).
+
 ## What Greenlight Recur adds
 
 Greenlight Recur currently focuses on:

@@ -30,13 +30,15 @@ class OllamaClient:
         except HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")[:1000]
             raise RuntimeError(f"Ollama returned HTTP {error.code}: {detail}") from error
-        except URLError as error:
+        except (URLError, TimeoutError, ConnectionError) as error:
             raise RuntimeError(
                 f"Cannot reach Ollama at {self.base_url}; start Ollama and verify the local URL."
             ) from error
         except (json.JSONDecodeError, UnicodeDecodeError) as error:
             raise RuntimeError("Ollama returned an invalid JSON response") from error
 
+        if not isinstance(result, dict):
+            raise RuntimeError("Ollama returned a non-object JSON response")
         message = result.get("message")
         if not isinstance(message, dict) or not isinstance(message.get("role"), str):
             raise RuntimeError("Ollama response did not contain a chat message")
