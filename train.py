@@ -2354,7 +2354,8 @@ def main():
     p.set_defaults(fn=cmd_ponder_probe)
 
     args = ap.parse_args()
-    sys.exit(args.fn(args) or 0)
+    from minagi.training.cli import dispatch
+    sys.exit(dispatch(args))
 
 
 if __name__ == "__main__":
