@@ -101,5 +101,64 @@ class TrainingLifecycleTests(unittest.TestCase):
             self.assertNotIn("KeyError", second.stderr)
 
 
+
+    def corpus(self, root, lines=400):
+        """A tiny text corpus and a disjoint held-out folder."""
+        train, held = Path(root) / "train", Path(root) / "held"
+        train.mkdir(exist_ok=True)
+        held.mkdir(exist_ok=True)
+        import random
+        rng = random.Random(7)
+        body = [f"{rng.randint(2, 99)} plus {rng.randint(2, 99)} is "
+                f"{0}." for _ in range(lines)]
+        body = [b.replace(" is 0.", f" is {int(b.split()[0]) + int(b.split()[2])}.")
+                for b in body]
+        (train / "train.txt").write_text("\n".join(body) + "\n", encoding="utf-8")
+        other = [f"{rng.randint(2, 99)} plus {rng.randint(2, 99)} is 0." for _ in range(80)]
+        other = [b.replace(" is 0.", f" is {int(b.split()[0]) + int(b.split()[2])}.")
+                 for b in other]
+        (held / "val.txt").write_text("\n".join(other) + "\n", encoding="utf-8")
+        return train, held
+
+    @unittest.skipUnless(RUN, "set GREENLIGHT_LIFECYCLE=1 to run the real "
+                              "train/resume lifecycle (~minutes)")
+    def test_read_trains_evaluates_saves_and_resumes(self):
+        """
+        The same lifecycle through `read`, which is the command the README
+        calls the one the project runs.
+
+        The stream lifecycle test cannot catch a broken `read`: two separate
+        defects made `read` unrunnable - a deleted `--segment-chars` and a
+        `FolderEvaluator` signature that no longer took the argument its caller
+        passed - and both passed 138 green tests, because nothing constructed
+        this command at all.
+        """
+        py = _vopt()
+        with tempfile.TemporaryDirectory() as root:
+            train, held = self.corpus(root)
+            weights = Path(root) / "weights"
+            common = ["--device", "cpu", "read", str(train),
+                      "--weights-dir", str(weights), "--save",
+                      "--chunk", "64", "--context", "128",
+                      "--context-start", "64", "--passes", "1",
+                      "--eval-chars", "2", "--grow-k", "0",
+                      "--resident", "2", "--ram-capacity", "4",
+                      "--sample-every", "0", "--no-plots",
+                      "--held-out", str(held)]
+            first = subprocess.run([py, str(REPO / "train.py")] + common,
+                                   cwd=REPO, capture_output=True, text=True,
+                                   timeout=3600)
+            self.assertEqual(first.returncode, 0,
+                             first.stdout[-3000:] + first.stderr[-3000:])
+            self.assertTrue((weights / "manifest.json").exists())
+            self.assertIn("held-out", (first.stdout + first.stderr).lower())
+
+            second = subprocess.run([py, str(REPO / "train.py")] + common,
+                                    cwd=REPO, capture_output=True, text=True,
+                                    timeout=3600)
+            self.assertEqual(second.returncode, 0,
+                             second.stdout[-3000:] + second.stderr[-3000:])
+
+
 if __name__ == "__main__":
     unittest.main()

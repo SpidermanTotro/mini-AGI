@@ -31,3 +31,39 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Compile Python sources
         run: python -m compileall -q minagi corpora mini_agent tests tools train.py serve.py greenlight_lab.py greenlight.py
+
+  lifecycle:
+    # The lifecycle job runs the commands the project actually runs.
+    #
+    # Five defects reached main behind a fully green unit suite, and every one
+    # of them lived in cmd_read or cmd_stream - neither of which had a test
+    # that constructed it. Two of them made `read` unable to start at all.
+    # A suite that tests components while the entry points go unrun is not
+    # evidence that the entry points work, so they are run here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.6"
+          python -m pip install -r requirements.txt "Flask>=3.0"
+      - name: Train, evaluate, save, restart - both commands
+        run: GREENLIGHT_LIFECYCLE=1 python -m unittest tests.test_command_contract -v
+        timeout-minutes: 45
+      - name: The Doctor CLI exits non-zero on a critical finding
+        run: |
+          python training_doctor.py --json runs/doctor-selftest/history.jsonl             > /tmp/doctor.json && { echo "expected a non-zero exit"; exit 1; } || true
+          python -c "
+          import json, sys
+          report = json.load(open('/tmp/doctor.json'))
+          assert report['health'] == 'critical', report['health']
+          codes = {f['code'] for f in report['findings']}
+          assert 'NO_EVIDENCE' in codes, codes
+          print('doctor self-test ok:', sorted(codes))
+          "
