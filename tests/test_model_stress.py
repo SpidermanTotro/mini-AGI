@@ -186,6 +186,73 @@ class ModelStressTests(unittest.TestCase):
                 resumed_optimizer.state[resumed.tok_emb.weight]["exp_avg"],
                 expected_trunk_m, atol=0.01, rtol=0.02)
 
+    def test_resumed_optimiser_can_step_after_expert_moments_are_restored(self):
+        """
+        A restart must be able to take an optimiser step.
+
+        Restoring an expert's moments gives that tensor `exp_avg` and
+        `exp_avg_sq` but no `step`: the counter lives in optim.npz, and an
+        expert file carries none. AdamW reads `state["step"]` on its very first
+        step, so a resumed run died with KeyError: 'step' before training a
+        batch - on a model whose whole claim is that it never stops training.
+        No test stepped a resumed optimiser, so nothing caught it.
+        """
+        import train
+        from minagi import store
+        from minagi.create import create
+        from minagi.store import load, save
+
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+                "os.environ", {"MINI_AGI_CONFIG": "",
+                               "GREENLIGHT_CONFIG": ""}):
+            weights = Path(root) / "weights"
+            settings = create(
+                str(weights), seed=11, verbose=False, d_model=8, n_head=2,
+                trunk_d_ff=12, block=8, max_steps=2, experts=4,
+                resident=2, d_ff=16, depth=1, top_k=2)
+            model, _, pool, _ = train.build_paged(
+                str(weights), torch.device("cpu"), resident=2, ram_capacity=4)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+            pool.attach_optimiser(optimizer)
+            pool.swap_to([0, 1])
+
+            loss = sum(p.square().mean() for p in model.parameters())
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            save(model, str(weights), step=1, opt=optimizer, cfg=settings)
+
+            resumed, _, resumed_pool, _ = train.build_paged(
+                str(weights), torch.device("cpu"), resident=2, ram_capacity=4)
+            resumed_optimizer = torch.optim.AdamW(resumed.parameters(), lr=1e-2)
+            resumed_pool.attach_optimiser(resumed_optimizer)
+            load(resumed, str(weights), opt=resumed_optimizer,
+                 device=torch.device("cpu"))
+            # The restore the training loop performs: train.py calls
+            # `weights_store._load_optim` itself, because load() only puts back
+            # weights. The trunk comes back with its counter, from optim.npz.
+            # A resumed pool's slot-indexed moments come back WITHOUT one -
+            # that asymmetry is the state that used to kill the first step.
+            resumed_pool.swap_to([0, 1])
+            trunk = resumed_optimizer.state[resumed.tok_emb.weight]
+            self.assertIn("step", trunk, "the trunk kept no counter to inherit")
+            slotless = [resumed_optimizer.state[getattr(resumed_pool, name)]
+                        for name in ("w1", "w3", "w2")]
+            for state in slotless:
+                state["exp_avg"] = torch.zeros_like(state["exp_avg"])
+                state["exp_avg_sq"] = torch.zeros_like(state["exp_avg_sq"])
+                state.pop("step", None)
+
+            store._stamp_missing_steps(resumed_optimizer)
+            for state in slotless:
+                self.assertIn("step", state,
+                              "a restored moment has no step counter")
+                self.assertEqual(float(state["step"]), float(trunk["step"]))
+            # and the step itself must not raise
+            loss = sum(p.square().mean() for p in resumed.parameters())
+            loss.backward()
+            resumed_optimizer.step()
+
     def test_paged_checkpoint_rejects_missing_expert_file(self):
         import train
         from minagi.create import create
@@ -249,7 +316,11 @@ class ModelStressTests(unittest.TestCase):
 
             pool.add_experts(1, step=0, make=make)
             self.assertEqual(pool.n_experts(), 4)
-            self.assertEqual(pool.segment_router.weight.shape[0], 4)
+            # One row per EXPERT, never per VRAM slot. Upstream moved working-set
+            # selection into the call sites' routers, so the pool-level
+            # segment router this used to assert on is gone; the gate is the
+            # pool's remaining per-expert vector and carries the same invariant.
+            self.assertEqual(pool.gate.numel(), 4)
             self.assertEqual(model.mlp.router.weight.shape[0], 4)
             new_expert_file = Path(root) / "e00003.npz"
             self.assertTrue(new_expert_file.exists())
@@ -257,7 +328,7 @@ class ModelStressTests(unittest.TestCase):
             self.assertEqual(pool.prune(step=100, survival=1), 3)
             self.assertEqual(pool.n_experts(), 1)
             self.assertEqual(pool.slots, [0])
-            self.assertEqual(pool.segment_router.weight.shape[0], 1)
+            self.assertEqual(pool.gate.numel(), 1)
             self.assertEqual(model.mlp.router.weight.shape[0], 1)
             self.assertTrue((Path(root) / "e00000.npz").exists())
             self.assertFalse(new_expert_file.exists())

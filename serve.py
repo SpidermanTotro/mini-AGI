@@ -59,11 +59,11 @@ def load_prime(chars, root="data/train/self-knowledge"):
     """
     Corpus text to open the conversation with, or "" if there is none.
 
-    TWO THINGS IT BUYS, and they are separate. The router gets something to
-    choose from: choose_for on "hi" has twenty characters to work with, and a
-    paged model that picks its working set badly answers out of the wrong
-    quarter of itself. And the learning stream starts part-way to its first
-    step rather than twenty exchanges short of one.
+    TWO THINGS IT BUYS, and they are separate. The reply has context to stand
+    on: "hi" alone is two characters, and every character the model writes
+    attends over what came before it and routes among the experts that whole
+    context has voted for. And the learning stream starts part-way to its
+    first step rather than twenty exchanges short of one.
 
     Taken from the self-knowledge lane because it is already in the register
     the chat is in - <user>/<bot> turns about what the model is - so this is
@@ -136,15 +136,15 @@ def load(weights, device=None, learn=True, lr=3e-4, save_every=8,
     STATE.update(model=model, tok=ByteTokenizer(), weights=weights)
     print(f"[loaded] {weights} on {dev}", file=sys.stderr)
 
-    # A paged model loads with an EMPTY card - every slot -1. Generation
-    # chooses a working set from the prompt before writing anything, so this
-    # does not change a reply; what it changes is that the page can show
-    # which experts are loaded before the first question instead of nothing.
+    # A paged model loads with an EMPTY card - every slot -1. A reply is
+    # admitted by its own text's vote, so this does not change a reply; what
+    # it changes is that the page can show experts on the card before the
+    # first question instead of nothing. It is one forward over the priming
+    # text, which admits the experts that text asks for, as any forward does.
     if PRIME:
         ids = STATE["tok"].encode(PRIME).ids[-model.cfg.block:]
-        # the same rule a reply uses, so the set on the page is the set a
-        # reply would have chosen rather than one picked a different way
-        model.peek_experts(torch.tensor([ids], device=dev), free=True)
+        with torch.no_grad():
+            model(torch.tensor([ids], device=dev))
 
     if learn:
         from minagi.config import get as _g, load as _lc
@@ -203,7 +203,8 @@ def resident_experts():
         out.append({"slot": j, "uid": int(pool.uid[e]),
                     "gate": round(float(gate[e]) / top, 3)})
     return {"resident": out, "n_experts": int(pool.n_experts()),
-            "n_slots": len(pool.slots)}
+            "n_slots": len(pool.slots),
+            "admitted": len(getattr(pool, "_admitted", ()) or ())}
 
 
 def learn_state():
@@ -258,29 +259,25 @@ def stream(prompt, max_new):
     c = _lc()
     strength = _g(c, "decoding.adapt_strength", 2.5)
     decay = _g(c, "decoding.adapt_decay", 0.88)
-    # Characters between re-decisions of the working set. What the reply wants
-    # after a hundred characters is not what the prompt alone asked for, and
-    # it is a far shorter span than pool.segment_chars, which is for reading.
-    reselect = _g(c, "pool.reselect_chars", 64)
 
     model, tok = STATE["model"], STATE["tok"]
     device = next(model.parameters()).device
     ids = tok.encode(prompt).ids[-model.cfg.block:]
     out = torch.tensor([ids or [10]], device=device)
 
-    # THE PROMPT CHOOSES THE EXPERTS. A paged model loads with an empty card -
-    # every slot -1 and every expert weight zero - so generating without
-    # asking for experts first runs on the trunk alone. That is not a degraded
-    # model, it is a different and much smaller one: 8M parameters of 468M,
-    # and it reads as fluent-shaped nonsense. `free` drops the hysteresis that
-    # keeps a working set steady while reading a stream, because a prompt is a
-    # deliberate change of subject.
-    # ...and it chooses them from ITSELF. choose_for scores the buffer of
-    # states the pool last collected, which is the previous reply's tail, not
-    # this prompt - measured, the same buffer with two different prompts
-    # returned byte-identical working sets. peek_experts reads the prompt once
-    # and scores on its own states.
-    model.peek_experts(out, free=True)
+    # THE TEXT CHOOSES. The prompt is read in chunks, and each chunk adds its
+    # characters' requests to the text's vote and is admitted the most-voted
+    # experts; then every character of the reply is a forward of its own that
+    # adds its requests and routes among what the whole text has voted for,
+    # loading whatever is not already on the card. Nothing here chooses
+    # experts - the forward does.
+    #
+    # Upstream removed `peek_experts`/`choose_for` from the model, so there is
+    # no prompt-side selection left to call: asking the model to choose experts
+    # from outside the forward is the thing that was replaced. A stub in
+    # tests/test_serve_context.py still carries the old method names, which is
+    # why that test could not have caught a stale call here.
+    pool = getattr(model, "pool", None)
 
     # Prefill in chunks, the way training reads a corpus. Feeding a long
     # prompt in one pass materialises activations for every position across
@@ -290,40 +287,19 @@ def stream(prompt, max_new):
 
     cur = out[:, -1:]
     produced = []
-    # The prompt has already chosen the working set above. Report it, so the
+    # The prompt's forwards have admitted its experts. Report them, so the
     # page starts the reply showing what is actually answering it.
     yield {"swap": {"at": 0, "moved": None, "pool": resident_experts()}}
     for i in range(max_new):
-        if reselect and i and i % reselect == 0:
-            # ASK WITH THE TEXT, NOT WITH ONE CHARACTER. `cur` is `nxt` from
-            # the second step onward - the single token just chosen - so this
-            # asked what the working set should be from one character's
-            # embedding, every 64 characters. That is not adaptation but a
-            # re-roll on whichever character landed on the boundary, and it
-            # can evict experts the prompt chose correctly. `out` is the
-            # prompt plus everything produced so far and is already being
-            # built for the decoder below. The sampler in train.py was fixed
-            # the same way; tests/test_sample_routing.py is the guard.
-            #
-            # It has been harmless rather than correct: demand() scores the
-            # states the pool collected while generating and ignores the
-            # tensor it is handed whenever it has any, which during a reply
-            # it always does. The single token was never actually scored.
-            # Harmless by accident is still worth closing.
-            moved = model.choose_for(out[:, -model.cfg.block:])
-            if moved:
-                # Only when something actually moved. choose_by_demand
-                # refuses to swap unless a candidate beats a resident by
-                # `margin`, so most re-checks change nothing, and animating
-                # those would say a thing happened when it did not.
-                yield {"swap": {"at": i, "moved": int(moved),
-                                "pool": resident_experts()}}
+        loads = getattr(pool, "loads", 0)
         if logits is None:
             if offset + cur.shape[1] > model.cfg.block:
                 # Cached keys have already been rotated at their old positions.
                 # Trimming them and deriving a new offset from the shorter cache
-                # reuses positions and corrupts every relative distance. Start
-                # a self-contained recent window instead, as RecurCoder.generate
+                # reuses positions and corrupts every relative distance - and
+                # `where()` only stops the counter saturating at the end of the
+                # rotary tables, it does not re-rotate what it kept. Start a
+                # self-contained recent window instead, as RecurCoder.generate
                 # does, leaving half the context free before the next rebuild.
                 keep = max(1, model.cfg.block // 2)
                 recent = out[:, -keep:]
@@ -333,6 +309,13 @@ def stream(prompt, max_new):
             else:
                 logits = model(cur, caches=caches, pos_offset=offset)[0]
                 offset += cur.shape[1]
+            moved = getattr(pool, "loads", 0) - loads
+            if moved:
+                # this character asked for experts that were not on the card;
+                # `moved` counts the ones copied onto it. Routing is only
+                # observable if it is reported, so the Doctor reads this.
+                yield {"swap": {"at": i, "moved": int(moved),
+                                "pool": resident_experts()}}
         nxt = pick_next(logits[:, -1, :].float(), out, temperature=0.0,
                         adapt_strength=strength, adapt_decay=decay)
         out = torch.cat([out, nxt], dim=1)
@@ -455,10 +438,8 @@ def api_state():
     right even when nothing is being generated - otherwise "how far from the
     next update" would only exist while the model was talking.
     """
-    from minagi.config import get as _g, load as _lc
     return jsonify({"learn": learn_state(),
-                    "pool": resident_experts(),
-                    "reselect": _g(_lc(), "pool.reselect_chars", 64)})
+                    "pool": resident_experts()})
 
 
 @app.route("/api/prime")
@@ -586,7 +567,7 @@ PAGE = r'''<!doctype html>
       <div class="bar"><div class="fill mem" id="mem-f"></div></div>
     </div>
     <div class="meter" id="m-exp">
-      <div class="mlab"><span>working set</span><b id="exp-n">-</b></div>
+      <div class="mlab"><span>experts the last character admitted</span><b id="exp-n">-</b></div>
       <div class="bar"><div class="fill" id="exp-f"></div></div>
     </div>
     <span class="note" id="note"></span>
@@ -617,7 +598,7 @@ let busy = false;
 // Both are counters the server keeps; the page mirrors them so that what
 // the model does to itself is visible while it is happening, rather than
 // inferred afterwards from the fact that nothing changed.
-let MECH = {pending:0, chunk:0, steps:0, reselect:64, since:0, uids:[]};
+let MECH = {pending:0, chunk:0, steps:0, admitted:0, slots:0, uids:[], loaded:0};
 const $ = id => document.getElementById(id);
 
 function note(text, kind){
@@ -645,12 +626,12 @@ function drawMem(){
   $('mem-f').style.width = (100 * Math.min(pending, chunk) / chunk) + '%';
 }
 function drawExp(){
-  const r = MECH.reselect;
-  if (!r){ $('exp-n').textContent = 'fixed'; return; }
-  const left = r - (MECH.since % r);
-  $('exp-n').textContent = busy ? (left + ' characters to the next re-check')
-                                : ('re-checked every ' + r + ' characters');
-  $('exp-f').style.width = (100 * (MECH.since % r) / r) + '%';
+  // A character may use at most as many experts as the card has slots: the
+  // ones its text - the prompt and the reply so far - has voted for most.
+  const {admitted, slots} = MECH;
+  if (!slots){ $('exp-n').textContent = '-'; return; }
+  $('exp-n').textContent = admitted + ' of ' + slots;
+  $('exp-f').style.width = (100 * Math.min(admitted, slots) / slots) + '%';
 }
 // Chips are keyed by uid, not by slot. A slot number says where an expert
 // sits; the uid says WHICH expert it is, and that is what survives pruning.
@@ -673,8 +654,9 @@ function drawChips(pool, changed){
 function applyState(d){
   if (d.learn){ MECH.pending = d.learn.pending; MECH.chunk = d.learn.chunk;
                 MECH.steps = d.learn.steps; }
-  if (d.reselect !== undefined) MECH.reselect = d.reselect;
   if (d.pool){
+    MECH.admitted = d.pool.admitted || 0; MECH.slots = d.pool.n_slots || 0;
+    drawExp();
     const seen = new Set(MECH.uids);
     const now = d.pool.resident.map(e => e.uid);
     const changed = MECH.uids.length ? new Set(now.filter(u => !seen.has(u)))
@@ -748,15 +730,13 @@ document.getElementById('f').onsubmit = async (e) => {
 
   add('user', text);
   messages.push({role:'user', content:text});
-  // Generation re-chooses the working set from the prompt before writing a
-  // character, so the countdown to the next re-check restarts every turn.
-  MECH.since = 0; drawExp();
   const body = add('bot', '');
   body.classList.add('caret');
   log.scrollTop = log.scrollHeight;
   stat.textContent = 'thinking...';
 
   let reply = '';
+  MECH.loaded = 0;
   try {
     const r = await fetch('/api/chat', {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -780,17 +760,21 @@ document.getElementById('f').onsubmit = async (e) => {
                   body.textContent = reply; follow(was);
                   // every character the model writes goes into the stream
                   // it learns from, so both counters advance as it speaks
-                  MECH.pending++; MECH.since++;
+                  MECH.pending++;
                   if (MECH.chunk && MECH.pending >= MECH.chunk)
                     MECH.pending = MECH.chunk;
-                  drawMem(); drawExp(); }
+                  drawMem(); }
         else if (d.swap){
           applyState(d);
           if (d.swap.moved){
+            // a load comes when the text's vote shifts, now and then; the
+            // note keeps the reply's running total rather than flashing one
+            // message per load
+            MECH.loaded += d.swap.moved;
             flare($('m-exp'));
-            note(d.swap.moved + (d.swap.moved === 1 ? ' expert swapped'
-                                                    : ' experts swapped'),
-                 'swap');
+            note(MECH.loaded + (MECH.loaded === 1 ? ' expert loaded'
+                                                  : ' experts loaded')
+                 + ' for this reply', 'swap');
           }
         }
         else if (d.error){ body.classList.add('err');

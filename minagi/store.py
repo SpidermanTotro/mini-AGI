@@ -235,7 +235,7 @@ def _save_paged(model, pool, path, step, val, opt, cfg, verbose, extra=None):
     core, routers = {}, {}
     for k, v in model.state_dict().items():
         if k.startswith("pool."):
-            if k.endswith(("gate", "segment_router.weight")):
+            if k.endswith("gate"):
                 routers[k] = v.detach().cpu().numpy()
             continue                      # w1/w3/w2 are slots, not experts
         (routers if _is_router(k) else core)[k] = v.detach().cpu().numpy()
@@ -277,10 +277,8 @@ def _save_paged(model, pool, path, step, val, opt, cfg, verbose, extra=None):
     # cannot be loaded back without widening it by hand.
     d["pool_max"] = max(int(d.get("pool_max") or 0), len(entries))
     # Which experts have ever been resident, and when each was admitted.
-    # This belongs in the checkpoint: the cold-start sweep exists to give an
-    # expert that has never been on the card its one chance, and if the flags
-    # reset every run the sweep restarts every run and the working set is
-    # never allowed to settle.
+    # Whether each expert has ever been on the card: a record, carried so a
+    # resumed run still knows it.
     if hasattr(pool, "telemetry"):
         # Everything the pool knows about its own experts. Rebuilt from
         # nothing every run otherwise, so a long run would end able to say
@@ -288,7 +286,6 @@ def _save_paged(model, pool, path, step, val, opt, cfg, verbose, extra=None):
         tel = pool.telemetry()
         manifest_tel = tel
         d["pool_ever"] = tel["ever"]
-        d["pool_since"] = tel["since"]
     else:
         manifest_tel = None
     manifest = {"step": step, "val": val, "cfg": d,
@@ -409,6 +406,7 @@ def _load_optim(opt, model, path):
     _load_expert_moments(opt, model, path)
     f = os.path.join(path, "optim.npz")
     if not os.path.exists(f):
+        _stamp_missing_steps(opt)
         return
     z = np.load(f)
     name_of = {id(p): n for n, p in model.named_parameters()}
@@ -431,6 +429,31 @@ def _load_optim(opt, model, path):
                 # fused AdamW requires the step counter on the same device as
                 # the parameter, not on the CPU where it was just loaded
                 st["step"] = torch.tensor(float(z[n + "|t"]), device=p.device)
+    _stamp_missing_steps(opt)
+
+
+def _stamp_missing_steps(opt):
+    """
+    Give every parameter holding restored moments a step counter.
+
+    An expert's moments live in its own file, which carries no counter, so a
+    resumed pool comes back with `exp_avg` and `exp_avg_sq` but no `step`.
+    AdamW reads `state["step"]` on its very first step, so a resumed run died
+    with KeyError: 'step' before it trained a single batch - on a model whose
+    whole claim is that it never stops training.
+
+    They inherit the optimiser's own counter, which is what they had: the
+    moments were written by the same Adam that had run that many steps.
+    """
+    counted = [float(st["step"]) for st in opt.state.values() if "step" in st]
+    if not counted:
+        return
+    t = max(counted)
+    for group in opt.param_groups:
+        for p in group["params"]:
+            st = opt.state[p]
+            if "exp_avg" in st and "step" not in st:
+                st["step"] = torch.tensor(t, device=p.device)
 
 
 def _load_expert_moments(opt, model, path):
