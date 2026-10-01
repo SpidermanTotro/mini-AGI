@@ -2325,6 +2325,10 @@ def main():
                          "brake's idle line so additions have to earn their way")
     rd.add_argument("--grow-keep-ratio", type=float,
                     default=_cfg(_c, "growth.keep_ratio_min", 0.35))
+    rd.add_argument("--segment-chars", dest="segment_chunks", type=int,
+                    default=_cfg(_c, "pool.segment_chars",
+                                 _cfg(_c, "pool.segment_chunks", 16) * 512),
+                    help="CHARACTERS one working set covers")
     rd.add_argument("--trunk-lr-mult", type=float,
                     default=_cfg(_c, "training.trunk_lr_mult", 0.3),
                     help="the trunk is shared by every domain and is where "

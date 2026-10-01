@@ -343,11 +343,13 @@ class FolderEvaluator:
     domain, and the files are read in order the way `read` reads them.
     """
 
-    def __init__(self, model, root, chunk, context, device, per_domain=True):
+    def __init__(self, model, root, chunk, context, device, per_domain=True,
+                 segment_chunks=16):
         from minagi.ingest import collect, as_stream
         self._as_stream = as_stream
         self.model, self.chunk, self.context = model, chunk, context
         self.device = device
+        self.segment_chunks = segment_chunks
         self.groups = {}
         subs = [d for d in sorted(os.listdir(root))
                 if os.path.isdir(os.path.join(root, d))] if per_domain and os.path.isdir(root) else []
