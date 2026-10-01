@@ -381,3 +381,200 @@ def _named_state(model, opt):
             state = opt.state.get(p)
             if state:
                 yield names.get(id(p), "?"), state
+
+
+# -- routing: where the experts' attention actually went --------------------
+#
+# A router that has collapsed still trains. Its loss falls, because the model
+# leans harder on whichever few experts it kept choosing and the trunk does the
+# rest - and the pool behind it is dead weight that no loss number reports.
+# Only the per-expert counters show it.
+
+def diagnose_experts(records: Iterable[dict]) -> dict:
+    """
+    Expert routing across a run, from the per-expert history records.
+
+    Each record is one checkpoint's view of the pool: how much routing mass
+    every expert took (`use`), its gate, how often it was admitted, and its
+    stable id. Records are positional lists paired with `uid`, because a prune
+    renumbers positions and renames nothing.
+    """
+    records = [r for r in records if isinstance(r, dict)]
+    findings: list[Finding] = []
+    if not records:
+        return _verdict(2, findings, {"records": 0})
+
+    last = records[-1]
+    use = [float(v) for v in last.get("use") or () if _finite(v)]
+    gate = [float(v) for v in last.get("gate") or () if _finite(v)]
+    admits = [float(v) for v in last.get("admits") or () if _finite(v)]
+    total = sum(use)
+    n = len(use)
+
+    if n and total > 0:
+        share = sorted((v / total for v in use), reverse=True)
+        top10 = sum(share[:10])
+        hhi = sum(s * s for s in share)
+        # A pool with no preference splits routing perfectly evenly, and a pool
+        # with total preference hands it to one expert. Measured between those
+        # two, so the reading does not drift with the size of the pool: 0 is
+        # perfectly even, 1 is a single expert taking everything. A raw HHI
+        # cannot do this - uniform is 1/n, which is 1/32 for a small pool and
+        # swamps any real concentration.
+        uniform = 1.0 / n
+        preference = max(0.0, (hhi - uniform) / (1.0 - uniform)) if n > 1 else 0.0
+        if top10 >= 0.80:
+            findings.append(Finding(
+                "ROUTING_COLLAPSED", "critical",
+                "Ten experts took at least 80% of all routing. The loss can "
+                "still fall - the trunk covers - so nothing but these "
+                "counters shows the rest of the pool is dead weight.",
+                {"experts": n, "top10_share": round(top10, 4),
+                 "preference": round(preference, 4)}))
+        elif preference < 0.05:
+            findings.append(Finding(
+                "ROUTING_HAS_NO_PREFERENCE", "warning",
+                "Routing is spread almost perfectly evenly, so the router is "
+                "not preferring anything: every expert gets about the same "
+                "share. That is what a pool full of interchangeable experts "
+                "looks like, and it is invisible in the loss.",
+                {"experts": n, "preference": round(preference, 5),
+                 "herfindahl": round(hhi, 5), "uniform": round(uniform, 5)}))
+
+        idle = sum(1 for v in use if v <= 0.0)
+        if n >= 8 and idle >= max(1, n // 4):
+            findings.append(Finding(
+                "DEAD_EXPERTS", "warning",
+                "A quarter or more of the pool has never been routed to. They "
+                "are occupying slots, disk and router rows for nothing.",
+                {"experts": n, "never_used": idle}))
+
+    if len(gate) >= 8:
+        srt = sorted(gate)
+        p10, p90 = srt[len(srt) // 10], srt[(len(srt) * 9) // 10]
+        if p10 > 0 and p90 / p10 < 1.05:
+            findings.append(Finding(
+                "GATES_NOT_SEPARATING", "warning",
+                "The gates are all within 5% of each other. A gate that never "
+                "moves cannot express a preference, so admission falls back "
+                "on routing mass alone.",
+                {"gate_p10": round(p10, 6), "gate_p90": round(p90, 6),
+                 "ratio": round(p90 / p10, 4)}))
+        elif max(gate) <= 0.0:
+            findings.append(Finding(
+                "GATES_ALL_ZERO", "critical",
+                "Every gate is zero, so nothing can be routed to.",
+                {"experts": len(gate)}))
+
+    if len(admits) >= 8:
+        segments = float(last.get("segments") or 0)
+        mean_admits = statistics.fmean(admits)
+        if segments > 0 and mean_admits > 8 * len(admits):
+            findings.append(Finding(
+                "EXPERT_CHURN", "warning",
+                "Experts are being admitted far more often than they are "
+                "learned from. A working set that turns over this fast never "
+                "carries anything forward.",
+                {"mean_admits": round(mean_admits, 2),
+                 "admits_per_segment": round(mean_admits / segments, 3)}))
+
+    # experts that vanished while the run kept going
+    vanished = 0
+    chars_seen = None
+    for earlier, later in zip(records, records[1:]):
+        before = {int(u) for u in earlier.get("uid") or ()}
+        after = {int(u) for u in later.get("uid") or ()}
+        vanished += len(before - after)
+        chars_seen = later.get("chars")
+    if vanished:
+        findings.append(Finding(
+            "EXPERTS_PRUNED", "warning",
+            "Experts were removed from the pool during the run. Each one was "
+            "something the model had learned and now cannot.",
+            {"removed": vanished, "chars_at_last_record": chars_seen}))
+
+    return _verdict(2, findings, {
+        "records": len(records),
+        "experts": n,
+        "chars": last.get("chars"),
+        "segments": last.get("segments"),
+        "total_use": total,
+        "top10_use_share": round(sum(sorted((v / total for v in use),
+                                            reverse=True)[:10]), 4) if total else None,
+        "preference": round(preference, 5) if total else None,
+        "never_used": sum(1 for v in use if v <= 0.0),
+        "admits_total": sum(admits),
+    })
+
+
+# -- retention: what one domain learned while another was being read ----------
+
+def diagnose_retention(rows: Iterable[dict]) -> dict:
+    """
+    Per-domain held-out loss over a run.
+
+    Averaging across domains is how catastrophic forgetting hides: a pool of
+    experts that keeps every subject alive at once scores well on the mean and
+    can still have lost one entirely. The recorder writes each domain's loss
+    separately, so this reads them separately.
+    """
+    rows = list(rows)
+    findings: list[Finding] = []
+    vals = [r for r in rows if _kind(r) == "val" and isinstance(r.get("per_domain"), dict)]
+    if not vals:
+        return _verdict(2, findings, {"evaluations": 0, "domains": 0})
+
+    domains = sorted({d for r in vals for d in r["per_domain"]})
+    tracked = [d for d in domains
+               if sum(1 for r in vals if _finite(r["per_domain"].get(d))) >= 2]
+    series = {d: [float(r["per_domain"][d]) for r in vals
+                  if _finite(r["per_domain"].get(d))] for d in tracked}
+
+    for domain, points in series.items():
+        first, last = points[0], points[-1]
+        if last > first * 1.10 and last > first + 0.01:
+            worse = (last - first) / max(first, 1e-9)
+            findings.append(Finding(
+                "DOMAIN_FORGOTTEN", "warning",
+                f"{domain} got measurably worse while the run went on. The "
+                "run average can improve with this happening.",
+                {"domain": domain, "first": round(first, 5),
+                 "latest": round(last, 5), "relative": round(worse, 4)}))
+        elif last > first * 1.02:
+            findings.append(Finding(
+                "DOMAIN_SLIPPING", "warning",
+                f"{domain} drifted upwards. Small on its own, but it is the "
+                "direction forgetting goes.",
+                {"domain": domain, "first": round(first, 5),
+                 "latest": round(last, 5)}))
+
+    latest_all = {d: points[-1] for d, points in series.items()}
+    if len(latest_all) >= 2:
+        worst = max(latest_all, key=lambda d: latest_all[d])
+        best = min(latest_all, key=lambda d: latest_all[d])
+        if latest_all[best] > 0 and latest_all[worst] > latest_all[best] * 3:
+            findings.append(Finding(
+                "DOMAIN_IMBALANCE", "warning",
+                f"{worst} is over three times worse than {best} on the same "
+                "model. That is a routing or capacity problem, not a general "
+                "one.",
+                {"worst": worst, "worst_val": round(latest_all[worst], 5),
+                 "best": best, "best_val": round(latest_all[best], 5)}))
+
+    return _verdict(2, findings, {
+        "evaluations": len(vals),
+        "domains": len(domains),
+        "tracked": len(tracked),
+        "per_domain_latest": {d: round(series[d][-1], 5) for d in tracked},
+    })
+
+
+def _verdict(version: int, findings: list[Finding], observations: dict) -> dict:
+    critical = any(f.severity == "critical" for f in findings)
+    warning = any(f.severity == "warning" for f in findings)
+    return {
+        "doctor_version": version,
+        "health": "critical" if critical else "warning" if warning else "healthy",
+        "observations": observations,
+        "findings": [asdict(f) for f in findings],
+    }

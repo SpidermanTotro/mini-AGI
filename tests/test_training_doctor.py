@@ -3,7 +3,8 @@ import os
 import tempfile
 import unittest
 
-from minagi.training_doctor import diagnose, diagnose_file
+from minagi.training_doctor import (diagnose, diagnose_experts, diagnose_file,
+                                      diagnose_retention)
 
 
 def real_rows():
@@ -72,6 +73,129 @@ class RealHistoryTests(unittest.TestCase):
                  "chars_per_s": 10.0} for i in range(8)]
         report = diagnose(rows)
         self.assertEqual(report["observations"]["step_samples"], 8)
+
+
+class RoutingTests(unittest.TestCase):
+    """
+    Routing checks, built against the schema PagedPool.telemetry writes and
+    validated against a real 128-expert run's expert_history.jsonl.
+    """
+
+    def record(self, use, gate=None, admits=None, uid=None, **extra):
+        n = len(use)
+        out = {"use": list(use), "experts": n, "chars": 1_000_000,
+               "segments": 100, "uid": uid or list(range(n))}
+        out["gate"] = list(gate) if gate is not None else [1.0] * n
+        out["admits"] = list(admits) if admits is not None else [1] * n
+        out.update(extra)
+        return out
+
+    def test_a_collapsed_router_is_critical(self):
+        # 16 experts, ten of them take everything. Loss would be fine.
+        use = [100.0] * 10 + [1.0] * 6
+        report = diagnose_experts([self.record(use)])
+        self.assertEqual(report["health"], "critical")
+        self.assertIn("ROUTING_COLLAPSED",
+                      {f["code"] for f in report["findings"]})
+
+    def test_a_router_with_a_preference_is_not_flagged(self):
+        # Six experts clearly preferred, the rest clearly not - but the top
+        # ten still hold well under 80% and the pool is far from even, so this
+        # is a working router rather than a collapsed or an indifferent one.
+        use = [30.0] * 6 + [3.0] * 26
+        gate = [1.0 + (i % 8) * 0.05 for i in range(32)]
+        report = diagnose_experts([self.record(use, gate=gate)])
+        codes = {f["code"] for f in report["findings"]}
+        self.assertNotIn("ROUTING_COLLAPSED", codes)
+        self.assertNotIn("ROUTING_HAS_NO_PREFERENCE", codes)
+        self.assertGreaterEqual(
+            report["observations"]["preference"], 0.05)
+
+    def test_perfectly_even_routing_is_flagged(self):
+        report = diagnose_experts([self.record([7.0] * 64)])
+        codes = {f["code"] for f in report["findings"]}
+        self.assertIn("ROUTING_HAS_NO_PREFERENCE", codes)
+
+    def test_flat_gates_are_flagged(self):
+        report = diagnose_experts([self.record([7.0] * 16, gate=[1.0] * 16)])
+        self.assertIn("GATES_NOT_SEPARATING",
+                      {f["code"] for f in report["findings"]})
+
+    def test_separated_gates_are_not_flagged(self):
+        gate = [0.2 + i * 0.3 for i in range(16)]
+        report = diagnose_experts([self.record([7.0] * 16, gate=gate)])
+        self.assertNotIn("GATES_NOT_SEPARATING",
+                         {f["code"] for f in report["findings"]})
+
+    def test_a_quarter_of_the_pool_never_used_is_flagged(self):
+        use = [10.0] * 12 + [0.0] * 4
+        report = diagnose_experts([self.record(use)])
+        self.assertIn("DEAD_EXPERTS", {f["code"] for f in report["findings"]})
+
+    def test_experts_removed_mid_run_are_reported(self):
+        first = self.record([5.0] * 8, uid=list(range(8)))
+        second = self.record([5.0] * 5, uid=[3, 4, 5, 6, 7], chars=2_000_000)
+        report = diagnose_experts([first, second])
+        codes = {f["code"] for f in report["findings"]}
+        self.assertIn("EXPERTS_PRUNED", codes)
+        evidence = next(f["evidence"] for f in report["findings"]
+                        if f["code"] == "EXPERTS_PRUNED")
+        self.assertEqual(evidence["removed"], 3)
+
+    def test_no_records_is_not_a_crash(self):
+        report = diagnose_experts([])
+        self.assertEqual(report["observations"]["records"], 0)
+
+
+class RetentionTests(unittest.TestCase):
+    """
+    Per-domain forgetting. The recorder writes each domain's loss separately,
+    which is the only place a forgotten domain is visible.
+    """
+
+    def val(self, step, **domains):
+        return {"kind": "val", "step": step, "val": 1.0,
+                "per_domain": {k: v for k, v in domains.items()}}
+
+    def test_a_domain_that_gets_worse_while_others_improve_is_flagged(self):
+        rows = [
+            self.val(0, math_=1.00, code=1.00, prose=1.00),
+            self.val(10, math_=1.80, code=0.70, prose=0.70),
+            self.val(20, math_=2.50, code=0.50, prose=0.50),
+        ]
+        report = diagnose_retention(rows)
+        codes = {f["code"] for f in report["findings"]}
+        self.assertIn("DOMAIN_FORGOTTEN", codes)
+        evidence = next(f["evidence"] for f in report["findings"]
+                        if f["code"] == "DOMAIN_FORGOTTEN")
+        self.assertEqual(evidence["domain"], "math_")
+
+    def test_every_domain_improving_is_clean(self):
+        rows = [
+            self.val(0, math_=2.00, code=2.00, prose=2.00),
+            self.val(10, math_=1.40, code=1.30, prose=1.50),
+            self.val(20, math_=1.10, code=1.05, prose=1.20),
+        ]
+        report = diagnose_retention(rows)
+        self.assertEqual(report["health"], "healthy", report["findings"])
+
+    def test_one_domain_far_worse_than_another_is_flagged(self):
+        rows = [
+            self.val(0, math_=1.00, code=1.00),
+            self.val(10, math_=0.50, code=5.00),
+        ]
+        report = diagnose_retention(rows)
+        self.assertIn("DOMAIN_IMBALANCE",
+                      {f["code"] for f in report["findings"]})
+
+    def test_a_single_evaluation_cannot_forget_anything(self):
+        report = diagnose_retention([self.val(0, math_=1.0)])
+        self.assertEqual(report["health"], "healthy")
+        self.assertEqual(report["observations"]["tracked"], 0)
+
+    def test_history_without_domains_is_not_a_crash(self):
+        report = diagnose_retention([{"kind": "val", "step": 1, "val": 1.0}])
+        self.assertEqual(report["observations"]["evaluations"], 0)
 
 
 class TrainingDoctorTests(unittest.TestCase):
