@@ -77,6 +77,8 @@ Greenlight Recur currently focuses on:
 - GradSNR robustness when active gradient sets change
 - safer corpus/cache handling
 - expert-pool diagnostics and plotting
+- a Training Doctor that checks restart, routing, retention and generation
+  rather than the loss curve alone — see `docs/TRAINING-DOCTOR-V2.md`
 - a local agent interface and local Ollama integration
 - compatibility work for ongoing upstream mini-AGI development
 
