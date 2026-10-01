@@ -68,6 +68,13 @@ def diagnose(rows: Iterable[dict]) -> dict:
     # in the integration pass presented.
     started = any(_kind(r) == "start" for r in rows)
     finished = any(_kind(r) == "done" for r in rows)
+    if not rows:
+        findings.append(Finding(
+            "NO_EVIDENCE", "critical",
+            "The history file is empty. Nothing has been judged here, which is "
+            "not the same as nothing being wrong - a wrong path and a run that "
+            "died before its first write look identical from the outside.",
+            {"rows": 0}))
     if started and not finished:
         findings.append(Finding(
             "RUN_TRUNCATED", "critical",
@@ -402,6 +409,16 @@ def diagnose_experts(records: Iterable[dict]) -> dict:
     records = [r for r in records if isinstance(r, dict)]
     findings: list[Finding] = []
     if not records:
+        # Absence of evidence is not evidence of health. Returning a clean
+        # report for an empty file means a truncated or wrong-path log reads
+        # as a healthy run, which is the most dangerous thing this tool could
+        # do - it is trusted precisely because it is passed a file.
+        findings.append(Finding(
+            "NO_EVIDENCE", "critical",
+            "There is nothing here to judge: no expert records at all. This "
+            "is a clean bill of health produced by having no data, not a run "
+            "that passed.",
+            {"records": 0}))
         return _verdict(2, findings, {"records": 0})
 
     last = records[-1]
@@ -413,7 +430,13 @@ def diagnose_experts(records: Iterable[dict]) -> dict:
 
     if n and total > 0:
         share = sorted((v / total for v in use), reverse=True)
-        top10 = sum(share[:10])
+        # "Top ten" is only meaningful in a pool bigger than ten. In an
+        # eight-expert pool the top ten IS the whole pool, so every healthy
+        # run scored 100% and the check cried ROUTING_COLLAPSED at a pool
+        # that was perfectly balanced. Count the tenth, or half the pool if it
+        # is smaller.
+        top_k = min(10, max(2, n // 2))
+        top = sum(share[:top_k])
         hhi = sum(s * s for s in share)
         # A pool with no preference splits routing perfectly evenly, and a pool
         # with total preference hands it to one expert. Measured between those
@@ -423,21 +446,23 @@ def diagnose_experts(records: Iterable[dict]) -> dict:
         # swamps any real concentration.
         uniform = 1.0 / n
         preference = max(0.0, (hhi - uniform) / (1.0 - uniform)) if n > 1 else 0.0
-        if top10 >= 0.80:
+        if top >= 0.80:
             findings.append(Finding(
                 "ROUTING_COLLAPSED", "critical",
-                "Ten experts took at least 80% of all routing. The loss can "
-                "still fall - the trunk covers - so nothing but these "
+                f"{top_k} experts took at least 80% of all routing. The loss "
+                "can still fall - the trunk covers - so nothing but these "
                 "counters shows the rest of the pool is dead weight.",
-                {"experts": n, "top10_share": round(top10, 4),
-                 "preference": round(preference, 4)}))
+                {"experts": n, "counted_experts": top_k,
+                 "top_share": round(top, 4), "preference": round(preference, 4)}))
         elif preference < 0.05:
             findings.append(Finding(
                 "ROUTING_HAS_NO_PREFERENCE", "warning",
-                "Routing is spread almost perfectly evenly, so the router is "
-                "not preferring anything: every expert gets about the same "
-                "share. That is what a pool full of interchangeable experts "
-                "looks like, and it is invisible in the loss.",
+                "Total routing mass is spread almost evenly, so on the "
+                "evidence of these counters the pool is not concentrating on "
+                "anyone. That does NOT show the experts are interchangeable - "
+                "different inputs can each pick their own experts and still "
+                "sum to an even total. Per-expert gate movement over time "
+                "would be needed to claim that.",
                 {"experts": n, "preference": round(preference, 5),
                  "herfindahl": round(hhi, 5), "uniform": round(uniform, 5)}))
 
@@ -522,6 +547,12 @@ def diagnose_retention(rows: Iterable[dict]) -> dict:
     findings: list[Finding] = []
     vals = [r for r in rows if _kind(r) == "val" and isinstance(r.get("per_domain"), dict)]
     if not vals:
+        findings.append(Finding(
+            "NO_EVIDENCE", "critical",
+            "No evaluation in this history carries per-domain losses, so "
+            "retention cannot be judged at all. Reported as unjudged rather "
+            "than as fine.",
+            {"evaluations": 0, "domains": 0}))
         return _verdict(2, findings, {"evaluations": 0, "domains": 0})
 
     domains = sorted({d for r in vals for d in r["per_domain"]})
@@ -532,14 +563,26 @@ def diagnose_retention(rows: Iterable[dict]) -> dict:
 
     for domain, points in series.items():
         first, last = points[0], points[-1]
-        if last > first * 1.10 and last > first + 0.01:
-            worse = (last - first) / max(first, 1e-9)
+        # Compare against what the domain ACHIEVED, not against where it
+        # started. A domain that went 5.0 -> 0.8 -> 3.0 has forgotten almost
+        # everything it learned and is still three times better than its own
+        # first evaluation, so a first-versus-last comparison calls it healthy.
+        # Forgetting is a loss of what was learned; the reference has to be the
+        # best of it, which is also how continual-learning work measures it.
+        best = min(points)
+        best_at = points.index(best)
+        if best_at < len(points) - 1 and last > best * 1.10 and last > best + 0.01:
+            worse = (last - best) / max(best, 1e-9)
             findings.append(Finding(
                 "DOMAIN_FORGOTTEN", "warning",
-                f"{domain} got measurably worse while the run went on. The "
-                "run average can improve with this happening.",
+                f"{domain} was learned and then lost: it reached {best:.4f} "
+                f"and is now {last:.4f}. Measured against its own best, not "
+                "its start - against its start it would look like progress, "
+                "because learning usually beats where it started.",
                 {"domain": domain, "first": round(first, 5),
-                 "latest": round(last, 5), "relative": round(worse, 4)}))
+                 "best": round(best, 5), "best_at_evaluation": best_at,
+                 "latest": round(last, 5), "relative": round(worse, 4),
+                 "regained": round((last - first) / max(first, 1e-9), 4)}))
         elif last > first * 1.02:
             findings.append(Finding(
                 "DOMAIN_SLIPPING", "warning",
@@ -749,6 +792,11 @@ def diagnose_generation(blocks: Iterable[dict]) -> dict:
     blocks = [b for b in blocks if isinstance(b, dict) and b.get("samples")]
     findings: list[Finding] = []
     if not blocks:
+        findings.append(Finding(
+            "NO_EVIDENCE", "critical",
+            "The samples log holds no checkpoints with samples in them. "
+            "Nothing was measured, which is not the same as nothing wrong.",
+            {"blocks": 0}))
         return _verdict(2, findings, {"blocks": 0})
 
     def adapted(block):
@@ -766,8 +814,43 @@ def diagnose_generation(blocks: Iterable[dict]) -> dict:
         return sum(vals) / len(vals) if vals else None
 
     early, late = blocks[:thirds], blocks[-thirds:]
-    early_adapted = mean_repeat(adapted, early)
-    late_adapted = mean_repeat(adapted, late)
+
+    # Per domain FIRST, because the aggregate is only meaningful over domains
+    # it can compare. A run whose mix changed - a new corpus domain appears
+    # late, and it is the repetitive one - moves the pooled average with no
+    # domain having got worse, and that reads exactly like collapse.
+    def pick_for(domain):
+        return lambda b: [s for s in adapted(b) if s["domain"] == domain]
+
+    all_domains = sorted({s["domain"] for b in blocks for s in b["samples"]
+                          if s.get("domain")})
+    per_domain, matched = {}, []
+    for d in all_domains:
+        pick = pick_for(d)
+        e, l = mean_repeat(pick, early), mean_repeat(pick, late)
+        if e is not None and l is not None:
+            per_domain[d] = {"early": round(e, 4), "late": round(l, 4),
+                             "change": round(l - e, 4)}
+            matched.append(d)
+    only_early = sorted(set(all_domains) - set(matched))
+
+    if only_early:
+        findings.append(Finding(
+            "DOMAIN_MIX_CHANGED", "warning",
+            "Domains present early are absent late ("
+            + ", ".join(only_early) + "). The pooled average spans two "
+            "different sets of subjects and cannot be compared across it, so "
+            "the headline below is computed over the domains that appear in "
+            "both thirds.",
+            {"only_early": only_early,
+             "compared_domains": matched}))
+
+    def matched_mean_repeat(group):
+        vals = [s["repeated"] for b in group for d in matched for s in pick_for(d)(b)]
+        return sum(vals) / len(vals) if vals else None
+
+    early_adapted = matched_mean_repeat(early)
+    late_adapted = matched_mean_repeat(late)
     early_raw = mean_repeat(raw, early)
     late_raw = mean_repeat(raw, late)
 
@@ -826,10 +909,12 @@ def diagnose_generation(blocks: Iterable[dict]) -> dict:
             {"repeated_late": round(late_raw, 4),
              "repeated_early": round(early_raw, 4)}))
 
-    texts = [s["text"] for b in blocks[-thirds:] for s in b["samples"]
-             if s["mode"] in ("raw_text", "adapted_text")]
+    texts = [(s["mode"], s["text"]) for b in blocks[-thirds:]
+             for s in b["samples"] if s["mode"] in ("raw_text", "adapted_text")]
     if texts:
-        qualities = [text_quality(t) for t in texts]
+        raw_texts = [t for mode, t in texts if mode == "raw_text"]
+        guarded_texts = [t for mode, t in texts if mode == "adapted_text"]
+        qualities = [text_quality(t) for _mode, t in texts]
         entropies = [q["char_entropy"] for q in qualities
                      if _finite(q["char_entropy"])]
         runs = [q["longest_run"] for q in qualities]
@@ -850,14 +935,39 @@ def diagnose_generation(blocks: Iterable[dict]) -> dict:
                 "One character repeated without interruption for "
                 f"{max(runs)} characters in a single sample.",
                 {"longest_run": max(runs)}))
-        if conson and max(conson) >= 6:
+        # Measured separately, and labelled honestly. This check used to read
+        # only the raw continuation and then claim in its message that the
+        # problem "survives into the guarded output" - which is a statement
+        # about a thing it had not looked at. A looping raw sample with clean
+        # guarded text produced exactly that false claim.
+        raw_conson = [text_quality(t)["max_consonant_run"] for t in raw_texts]
+        guarded_conson = [text_quality(t)["max_consonant_run"]
+                          for t in guarded_texts]
+        raw_max = max(raw_conson) if raw_conson else None
+        guarded_max = max(guarded_conson) if guarded_conson else None
+        if (raw_max is not None and raw_max >= 6) or \
+                (guarded_max is not None and guarded_max >= 6):
+            # Both are measured, because either can be where the nonsense is.
+            # Measured on this project's own late samples: the longest raw
+            # consonant run is 5 and the longest GUARDED run is 6 - the
+            # repetition guard strips loops but not word-shaped noise. A
+            # raw-only check misses it entirely.
+            if raw_max and raw_max >= 6 and guarded_max and guarded_max >= 6:
+                where = "raw output AND the guarded text a reader sees"
+            elif raw_max and raw_max >= 6:
+                where = "raw output only; the guard removed it"
+            else:
+                where = ("the guarded text a reader sees, not the raw "
+                         "continuation")
             findings.append(Finding(
                 "OUTPUT_NOT_WORD_SHAPED", "warning",
                 "The output carries runs of consonants no English word has - "
-                "six or more in a row without a vowel. This is what 'bfjjk "
-                "hkdkgm' measures, and it survives into the guarded output.",
-                {"max_consonant_run": max(conson),
-                 "samples": len(conson)}))
+                "six or more in a row without a vowel. This is what "
+                "'bfjjk hkdkgm' measures. Observed in: " + where + ".",
+                {"raw_max_consonant_run": raw_max,
+                 "guarded_max_consonant_run": guarded_max,
+                 "raw_samples": len(raw_texts),
+                 "guarded_samples": len(guarded_texts)}))
         elif wordy and statistics.fmean(wordy) < 0.55:
             findings.append(Finding(
                 "OUTPUT_MOSTLY_NON_ALPHA", "warning",
@@ -866,8 +976,34 @@ def diagnose_generation(blocks: Iterable[dict]) -> dict:
                 {"word_like_rate": round(statistics.fmean(wordy), 3),
                  "samples": len(wordy)}))
 
-    domains = sorted({s["domain"] for b in blocks for s in b["samples"]
-                      if s.get("domain")})
+    domains = all_domains
+
+    # Measured on the project's own full samples log: repetition rose +0.220
+    # on wikipedia, +0.058 on chat_hermes and +0.046 on code, while arithmetic
+    # fell -0.032, stories -0.060 and chess -0.007. The pooled average moved
+    # +0.025 and read as noise. Half the domains were degenerating and half
+    # were improving, and no single number distinguishes those two situations.
+    for d, m in sorted(per_domain.items(), key=lambda kv: -kv[1]["change"]):
+        if m["change"] > 0.10:
+            findings.append(Finding(
+                "DOMAIN_DEGENERATING", "warning",
+                f"{d} is emitting far more repeated text than it was, while "
+                "the run average barely moved. Some domains are improving at "
+                "the same time as this one, which is what makes the average "
+                "uninformative.",
+                {"domain": d, **m}))
+        elif m["change"] > 0.03:
+            findings.append(Finding(
+                "DOMAIN_SLIPPING_TEXT", "warning",
+                f"{d} is drifting towards repetition. Small, and in the "
+                "direction degeneration goes.",
+                {"domain": d, **m}))
+        elif m["change"] < -0.05:
+            findings.append(Finding(
+                "DOMAIN_TEXT_IMPROVED", "pass",
+                f"{d} is markedly less repetitive than it was.",
+                {"domain": d, **m}))
+
     worst = None
     if domains and late:
         worst = max(domains, key=lambda d: (
@@ -885,4 +1021,5 @@ def diagnose_generation(blocks: Iterable[dict]) -> dict:
         "repeated_late": round(late_adapted, 4) if late_adapted is not None else None,
         "raw_repeated_late": round(late_raw, 4) if late_raw is not None else None,
         "worst_domain": worst,
+        "per_domain": per_domain,
     })

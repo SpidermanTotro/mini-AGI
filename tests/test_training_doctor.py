@@ -25,6 +25,18 @@ def real_rows():
     ]
 
 
+def sample_block(step, val, adapted, raw, domain="stories", text=""):
+    block = {"step": step, "val": val, "chars_m": 1.0, "minutes": step,
+             "experts": 64,
+             "samples": [{"domain": domain, "mode": "raw", "repeated": raw},
+                         {"domain": domain, "mode": "adapted",
+                          "repeated": adapted}]}
+    if text:
+        block["samples"].append({"domain": domain, "mode": "raw_text",
+                                 "text": text})
+    return block
+
+
 class RealHistoryTests(unittest.TestCase):
     """
     The doctor's own fixtures used "event"; the recorder writes "kind".
@@ -92,8 +104,8 @@ class RoutingTests(unittest.TestCase):
         return out
 
     def test_a_collapsed_router_is_critical(self):
-        # 16 experts, ten of them take everything. Loss would be fine.
-        use = [100.0] * 10 + [1.0] * 6
+        # 16 experts, half of them take everything. Loss would be fine.
+        use = [100.0] * 8 + [1.0] * 8
         report = diagnose_experts([self.record(use)])
         self.assertEqual(report["health"], "critical")
         self.assertIn("ROUTING_COLLAPSED",
@@ -208,14 +220,7 @@ class GenerationTests(unittest.TestCase):
     misspelled; what actually breaks is repetition, entropy and word-shape.
     """
 
-    def block(self, step, val, adapted, raw, domain="stories", text=""):
-        return {"step": step, "val": val, "chars_m": 1.0, "minutes": step,
-                "experts": 64,
-                "samples": [{"domain": domain, "mode": "raw", "repeated": raw},
-                            {"domain": domain, "mode": "adapted",
-                             "repeated": adapted}]
-                            + ([{"domain": domain, "mode": "raw_text",
-                                 "text": text}] if text else [])}
+    block = staticmethod(sample_block)
 
     def test_text_metrics_see_a_repeat_loop(self):
         loop = "the " * 60
@@ -283,6 +288,53 @@ class GenerationTests(unittest.TestCase):
         codes = {f["code"] for f in report["findings"]}
         self.assertNotIn("LOSS_IMPROVING_OUTPUT_COLLAPSING", codes)
         self.assertIn("GENERATION_STILL_REPETITIVE", codes)
+
+    def test_domains_are_measured_separately_not_averaged(self):
+        """
+        The aggregate can hide a split: half the domains degenerating while the
+        other half improve reads as a small overall rise. Real run: repetition
+        up +0.220 on wikipedia while arithmetic fell -0.032 and stories -0.060,
+        and the average moved +0.025 and looked like noise.
+
+        A selector that filters blocks rather than samples reports the same
+        number for all nine domains and still looks plausible, so this asserts
+        the domains actually differ.
+        """
+        blocks = []
+        for i in range(9):
+            early = i < 3
+            blocks.append(self.block(
+                i, 2.0 if early else 1.0,
+                adapted=0.05 if early else 0.06,
+                raw=0.10, domain="arithmetic", text="the cat sat on the mat"))
+            blocks.append(self.block(
+                i, 2.0 if early else 1.0,
+                adapted=0.20 if early else 0.80,
+                raw=0.10, domain="wikipedia", text="the cat sat on the mat"))
+        report = diagnose_generation(blocks)
+        per = report["observations"]["per_domain"]
+        self.assertNotAlmostEqual(per["arithmetic"]["change"],
+                                  per["wikipedia"]["change"], places=3)
+        self.assertIn("DOMAIN_DEGENERATING",
+                      {f["code"] for f in report["findings"]})
+        evidence = {f["evidence"]["domain"]: f["evidence"]
+                    for f in report["findings"] if f["code"] == "DOMAIN_DEGENERATING"}
+        self.assertIn("wikipedia", evidence)
+        self.assertNotIn("arithmetic", evidence)
+
+    def test_a_domain_that_improves_is_not_flagged(self):
+        blocks = []
+        for i in range(9):
+            early = i < 3
+            blocks.append(self.block(
+                i, 2.0 if early else 1.0,
+                adapted=0.60 if early else 0.05,
+                raw=0.10, domain="stories", text="the cat sat on the mat"))
+        report = diagnose_generation(blocks)
+        self.assertNotIn("DOMAIN_DEGENERATING",
+                         {f["code"] for f in report["findings"]})
+        self.assertNotIn("DOMAIN_SLIPPING_TEXT",
+                         {f["code"] for f in report["findings"]})
 
     def test_no_blocks_is_not_a_crash(self):
         self.assertEqual(diagnose_generation([])["observations"]["blocks"], 0)
@@ -446,3 +498,140 @@ class ResumePreflightTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FalseAlarmTests(unittest.TestCase):
+    block = staticmethod(sample_block)
+
+    """
+    Reproductions of reported false verdicts, each one a check that used to
+    pass when it should not have. A diagnostic that cries wolf on a healthy
+    run gets ignored on an unhealthy one.
+    """
+
+    def test_a_balanced_small_pool_is_not_called_collapsed(self):
+        # "Top ten" out of eight experts IS the whole pool, so every healthy
+        # eight-expert run scored 100% and reported ROUTING_COLLAPSED.
+        report = diagnose_experts([{"use": [5.0] * 8, "gate": [1.0] * 8,
+                                    "admits": [1] * 8, "uid": list(range(8)),
+                                    "experts": 8, "chars": 1000,
+                                    "segments": 100}])
+        self.assertNotIn("ROUTING_COLLAPSED",
+                         {f["code"] for f in report["findings"]})
+        self.assertNotEqual(report["health"], "critical")
+
+    def test_no_evidence_is_never_a_clean_bill_of_health(self):
+        for report in (diagnose_experts([]), diagnose_retention([]),
+                       diagnose_generation([])):
+            self.assertEqual(report["health"], "critical")
+            self.assertIn("NO_EVIDENCE",
+                          {f["code"] for f in report["findings"]})
+
+    def test_a_history_with_no_telemetry_is_not_healthy(self):
+        report = diagnose([{"kind": "start", "step": None}])
+        self.assertEqual(report["health"], "critical")
+
+    def test_a_new_worse_domain_does_not_read_as_collapse(self):
+        # Story repetition unchanged, and a code domain arrives late that
+        # repeats more. The pooled average rises, which used to be reported
+        # as LOSS_IMPROVING_OUTPUT_COLLAPSING. Nothing actually got worse.
+        blocks = []
+        for i in range(9):
+            early = i < 3
+            blocks.append(self.block(
+                i, 2.0 if early else 1.0, adapted=0.02, raw=0.10,
+                domain="stories", text="the cat sat on the mat"))
+            if not early:
+                blocks[-1]["samples"].append(
+                    {"domain": "code", "mode": "adapted", "repeated": 0.70})
+                blocks[-1]["samples"].append(
+                    {"domain": "code", "mode": "raw", "repeated": 0.95})
+        report = diagnose_generation(blocks)
+        codes = {f["code"] for f in report["findings"]}
+        self.assertNotIn("LOSS_IMPROVING_OUTPUT_COLLAPSING", codes)
+        self.assertNotIn("DOMAIN_DEGENERATING", codes)
+        self.assertIn("DOMAIN_MIX_CHANGED", codes)
+
+    def test_the_consonant_finding_only_claims_what_it_measured(self):
+        # Raw loops, guarded output clean. The old message asserted the
+        # problem survived the guard, having never read the guarded text.
+        blocks = []
+        for i in range(9):
+            early = i < 3
+            blocks.append(self.block(
+                i, 2.0 if early else 1.0, adapted=0.05, raw=0.10,
+                domain="stories", text="the cat sat down quietly"))
+        for b in blocks[-3:]:
+            b["samples"].append({
+                "domain": "stories", "mode": "raw_text",
+                "text": "bfjjk hkdkgm tkkitk yigj gibvbrish bfjjk hkdkgm"})
+            b["samples"].append({
+                "domain": "stories", "mode": "adapted_text",
+                "text": "the cat sat down quietly and then went to sleep"})
+        report = diagnose_generation(blocks)
+        evidence = next(f["evidence"] for f in report["findings"]
+                        if f["code"] == "OUTPUT_NOT_WORD_SHAPED")
+        self.assertGreaterEqual(evidence["raw_max_consonant_run"], 6)
+        self.assertLess(evidence["guarded_max_consonant_run"], 6)
+        message = next(f["message"] for f in report["findings"]
+                       if f["code"] == "OUTPUT_NOT_WORD_SHAPED")
+        self.assertNotIn("survives", message)
+        self.assertIn("raw output only", message)
+
+    def test_the_guard_claim_is_made_when_it_is_true(self):
+        blocks = []
+        for i in range(9):
+            early = i < 3
+            blocks.append(self.block(
+                i, 2.0 if early else 1.0, adapted=0.05, raw=0.10,
+                domain="stories", text="the cat sat down quietly"))
+        for b in blocks[-3:]:
+            for mode in ("raw_text", "adapted_text"):
+                b["samples"].append({
+                    "domain": "stories", "mode": mode,
+                    "text": "bfjjk hkdkgm tkkitk yigj gibvbrish bfjjk"})
+        report = diagnose_generation(blocks)
+        evidence = next(f["evidence"] for f in report["findings"]
+                        if f["code"] == "OUTPUT_NOT_WORD_SHAPED")
+        self.assertGreaterEqual(evidence["raw_max_consonant_run"], 6)
+        self.assertGreaterEqual(evidence["guarded_max_consonant_run"], 6)
+        message = next(f["message"] for f in report["findings"]
+                       if f["code"] == "OUTPUT_NOT_WORD_SHAPED")
+        self.assertIn("AND the guarded text", message)
+
+
+class MissedFailureTests(unittest.TestCase):
+    def test_a_domain_learned_and_then_forgotten_is_caught(self):
+        # 5.0 -> 0.8 -> 3.0 is still three times better than where it started,
+        # so a first-versus-last comparison called it healthy. Forgetting is
+        # measured against what was achieved.
+        rows = [
+            {"kind": "val", "step": 0, "val": 2.5,
+             "per_domain": {"math_": 5.0, "code": 2.0}},
+            {"kind": "val", "step": 1, "val": 1.0,
+             "per_domain": {"math_": 0.8, "code": 1.0}},
+            {"kind": "val", "step": 2, "val": 2.0,
+             "per_domain": {"math_": 3.0, "code": 0.9}},
+        ]
+        report = diagnose_retention(rows)
+        codes = {f["code"] for f in report["findings"]}
+        self.assertIn("DOMAIN_FORGOTTEN", codes)
+        evidence = {f["evidence"]["domain"]: f["evidence"]
+                    for f in report["findings"]
+                    if f["code"] == "DOMAIN_FORGOTTEN"}
+        self.assertIn("math_", evidence)
+        self.assertAlmostEqual(evidence["math_"]["best"], 0.8)
+        self.assertAlmostEqual(evidence["math_"]["best_at_evaluation"], 1)
+
+    def test_a_domain_that_only_improves_is_not_called_forgotten(self):
+        rows = [
+            {"kind": "val", "step": 0, "val": 2.0,
+             "per_domain": {"math_": 5.0, "code": 5.0}},
+            {"kind": "val", "step": 1, "val": 1.2,
+             "per_domain": {"math_": 2.0, "code": 2.2}},
+            {"kind": "val", "step": 2, "val": 1.0,
+             "per_domain": {"math_": 1.9, "code": 2.1}},
+        ]
+        report = diagnose_retention(rows)
+        self.assertNotIn("DOMAIN_FORGOTTEN",
+                         {f["code"] for f in report["findings"]})

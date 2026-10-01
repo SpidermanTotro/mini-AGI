@@ -60,8 +60,11 @@ def main():
         Path(args.out).write_text(payload + "\n", encoding="utf-8")
 
     if args.json:
+        # The exit code is the whole point for an automated caller, and it
+        # used to be dropped here: `--json` returned before the status was set,
+        # so a critical finding exited 0 and CI read a dead run as healthy.
         print(payload)
-        return
+        raise SystemExit(1 if report["health"] == "critical" else 0)
 
     print("GREENLIGHT TRAINING DOCTOR")
     print("=" * 48)
