@@ -1905,6 +1905,28 @@ def _split_trunk_pool(model):
     return trunk, pool
 
 
+def _router_width(wdir, man):
+    """
+    How many rows a checkpoint's routers have, read from the checkpoint.
+
+    The manifest's n_experts is how many experts the pool ended up holding,
+    which is not the width its routers were built at: a pool that never grew
+    keeps config.yaml's width, and one that was pruned keeps the narrower one.
+    """
+    default = int(man["n_experts"])
+    path = os.path.join(wdir, "routers.npz")
+    if not os.path.exists(path):
+        return default
+    try:
+        z = np.load(path)
+        for name in z.files:
+            if name.endswith("router.weight"):
+                return int(z[name].shape[0])
+    except Exception:
+        pass
+    return default
+
+
 def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
                 read_only=False, expert_write_path=None):
     """
@@ -1971,7 +1993,14 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
     # pool_max ratchets up and never comes down, so after a prune took the
     # pool from 158 to 157 the max() still read 158 and the directory would
     # not load at all. The ceiling now lives in `stream` where it belongs.
-    cfg.pool_max = int(man["n_experts"])
+    #
+    # Sizing from n_experts is wrong the other way, and was wrong here before:
+    # a pool that never grew keeps the width config.yaml built it at, so its
+    # router tensors are far wider than the expert count and this shrank the
+    # model below them. Every `stream`-trained directory that had not grown
+    # was unloadable by `read`. The checkpoint's own router tensors are the
+    # authority on the width; neither number is a substitute for reading it.
+    cfg.pool_max = _router_width(wdir, man)
     if ceiling and ceiling > cfg.block:
         # RoPE tables are built to cfg.block and carry no learned parameters,
         # so raising the ceiling on an existing model costs a bigger table and
