@@ -578,3 +578,311 @@ def _verdict(version: int, findings: list[Finding], observations: dict) -> dict:
         "observations": observations,
         "findings": [asdict(f) for f in findings],
     }
+
+
+# -- generation: what actually came out, against what the loss said -----------
+#
+# The failure this exists for is the one that looks like success: loss falls,
+# perplexity falls, the graph descends - and the model writes "bfjjk hkdkgm".
+# Nothing in a loss series can see that, because the loss is computed over the
+# text the model was trained on, while the damage is in the text it produces.
+
+_WORD = __import__("re").compile(r"[A-Za-z]{2,}")
+_VOWELS = frozenset("aeiouy")
+
+
+def _max_consonant_run(text: str) -> int:
+    """
+    Longest run of consonants with no vowel in it.
+
+    This is what actually catches "bfjjk hkdkgm tkkitk". A word list is the
+    obvious tool and the wrong one - the corpus is code, chess and arithmetic
+    as well as prose, so every dictionary flags valid output. But English has
+    no six consonants in a row without a vowel, not even in "strengths"; real
+    text tops out around five. Run it across the whole sample rather than per
+    token, because the nonsense does not respect word boundaries - and it is
+    the run *across* boundaries that reaches double digits.
+    """
+    run = longest = 0
+    for ch in text:
+        if ch.isalpha() and ch.lower() not in _VOWELS:
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 0
+    return longest
+
+
+def text_quality(text: str, n: int = 8) -> dict:
+    """
+    Degeneration metrics for one generated sample.
+
+    Deliberately dictionary-free. The corpus is code, chess, arithmetic and
+    prose in one run, so any word list flags valid output as misspelled; these
+    measure shape, which is what actually breaks.
+    """
+    import math as _math
+
+    stripped = text.strip()
+    if not stripped:
+        return {"chars": 0, "repeated_ngrams": None, "longest_run": 0,
+                "char_entropy": None, "distinct_ratio": None,
+                "word_like_rate": None, "max_consonant_run": 0}
+
+    grams = [stripped[i:i + n] for i in range(len(stripped) - n + 1)]
+    seen: set[str] = set()
+    repeats = 0
+    for g in grams:
+        if g in seen:
+            repeats += 1
+        else:
+            seen.add(g)
+
+    longest = run = 1
+    for a, b in zip(stripped, stripped[1:]):
+        run = run + 1 if a == b else 1
+        longest = max(longest, run)
+
+    counts: dict[str, int] = {}
+    for ch in stripped:
+        counts[ch] = counts.get(ch, 0) + 1
+    total = len(stripped)
+    entropy = -_math.fsum((c / total) * _math.log2(c / total)
+                          for c in counts.values())
+
+    tokens = stripped.split()
+    word_like = sum(1 for t in tokens if _WORD.fullmatch(t))
+
+    return {
+        "chars": total,
+        "repeated_ngrams": (repeats / len(grams)) if grams else None,
+        "longest_run": longest,
+        "char_entropy": entropy,
+        "distinct_ratio": (len(set(t.lower() for t in tokens)) / len(tokens))
+                          if tokens else None,
+        "word_like_rate": (word_like / len(tokens)) if tokens else None,
+        "max_consonant_run": _max_consonant_run(stripped),
+    }
+
+
+_STEP_RE = __import__("re").compile(
+    r"^step ([\d,]+)\s+([\d.]+)M of .*?\(.*?\)\s+(\d+) min\s+(\d+) experts")
+_VAL_RE = __import__("re").compile(r"^held-out loss ([\d.]+) \+/-")
+_REPEAT_RE = __import__("re").compile(r"\[(raw|adapted)\]\s+repeated \d+-grams (\d+)%")
+_PROMPT_RE = __import__("re").compile(r"^prompt: '")
+_DOMAIN_RE = __import__("re").compile(r"^--- (.+) ---$")
+
+
+def parse_samples(path: str | Path) -> list[dict]:
+    """
+    Read runs/samples.txt into per-checkpoint blocks.
+
+    The sampler writes prose, not JSON, so this reads the shape the file has:
+    a step header, the held-out loss for that step, then one section per domain
+    with a prompt and the raw and repetition-guarded continuations.
+    """
+    import re
+
+    blocks: list[dict] = []
+    current: dict | None = None
+    domain: str | None = None
+    pending_raw = False
+
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            m = _STEP_RE.match(line)
+            if m:
+                current = {"step": int(m.group(1).replace(",", "")),
+                           "chars_m": float(m.group(2)),
+                           "minutes": int(m.group(3)),
+                           "experts": int(m.group(4)),
+                           "val": None, "samples": []}
+                blocks.append(current)
+                domain = None
+                continue
+            if current is None:
+                continue
+            m = _VAL_RE.match(line)
+            if m:
+                current["val"] = float(m.group(1))
+                continue
+            m = _DOMAIN_RE.match(line)
+            if m:
+                domain = m.group(1).strip()
+                pending_raw = False
+                continue
+            m = _REPEAT_RE.match(line)
+            if m and domain is not None:
+                current["samples"].append({
+                    "domain": domain, "mode": m.group(1),
+                    "repeated": int(m.group(2)) / 100.0})
+                pending_raw = m.group(1)
+                continue
+            if pending_raw is not None and domain is not None:
+                if _PROMPT_RE.match(line):
+                    pending_raw = None
+                    continue
+                if line.startswith("--- ") or line.startswith("="):
+                    pending_raw = None
+                    continue
+                # The continuation is the line under its marker. Both are kept:
+                # the guarded one is what the reader sees, the raw one is what
+                # the model actually wanted to emit.
+                current["samples"].append({
+                    "domain": domain, "mode": pending_raw + "_text",
+                    "text": line})
+                pending_raw = None
+    return blocks
+
+
+def diagnose_generation(blocks: Iterable[dict]) -> dict:
+    """
+    Generation quality against the loss that was falling next to it.
+
+    The comparison is early run against late run, thirds of the way through, so
+    a single bad sample cannot condemn a run and a single good one cannot save
+    it.
+    """
+    import math
+
+    blocks = [b for b in blocks if isinstance(b, dict) and b.get("samples")]
+    findings: list[Finding] = []
+    if not blocks:
+        return _verdict(2, findings, {"blocks": 0})
+
+    def adapted(block):
+        return [s for s in block["samples"]
+                if s["mode"] == "adapted" and s.get("repeated") is not None]
+
+    def raw(block):
+        return [s for s in block["samples"]
+                if s["mode"] == "raw" and s.get("repeated") is not None]
+
+    thirds = max(1, len(blocks) // 3)
+
+    def mean_repeat(sel, group):
+        vals = [s["repeated"] for b in group for s in sel(b)]
+        return sum(vals) / len(vals) if vals else None
+
+    early, late = blocks[:thirds], blocks[-thirds:]
+    early_adapted = mean_repeat(adapted, early)
+    late_adapted = mean_repeat(adapted, late)
+    early_raw = mean_repeat(raw, early)
+    late_raw = mean_repeat(raw, late)
+
+    def mean_val(group):
+        vals = [b["val"] for b in group if _finite(b.get("val"))]
+        return sum(vals) / len(vals) if vals else None
+
+    early_val, late_val = mean_val(early), mean_val(late)
+
+    if early_val and late_val and late_val < early_val * 0.95:
+        improving = True
+    else:
+        improving = False
+    if early_adapted is not None and late_adapted is not None:
+        moved = late_adapted - early_adapted
+        if improving and moved > 0.05:
+            findings.append(Finding(
+                "LOSS_IMPROVING_OUTPUT_COLLAPSING", "critical",
+                "Held-out loss fell while repetition in what the model writes "
+                "went UP. The loss is measured over text it was trained on; "
+                "this is the discrepancy the two measure separately.",
+                {"held_out_early": round(early_val, 4),
+                 "held_out_late": round(late_val, 4),
+                 "repeated_early": round(early_adapted, 4),
+                 "repeated_late": round(late_adapted, 4),
+                 "repeated_rise": round(moved, 4)}))
+        elif improving and moved > 0.005:
+            # Not yet a collapse, and deliberately not reported as one. But the
+            # two numbers moved in opposite directions, and the direction is
+            # the thing worth watching - a threshold loose enough to catch a
+            # 27% rise in repetition is loose enough to fire on noise, and a
+            # threshold tight enough to avoid noise will miss a real slide.
+            findings.append(Finding(
+                "LOSS_AND_OUTPUT_DIVERGING", "warning",
+                "Held-out loss improved and repetition in the output rose "
+                "slightly. Too small to call degeneration, and the direction "
+                "is what forgetting looks like starting.",
+                {"held_out_early": round(early_val, 4),
+                 "held_out_late": round(late_val, 4),
+                 "repeated_early": round(early_adapted, 4),
+                 "repeated_late": round(late_adapted, 4),
+                 "repeated_rise": round(moved, 4),
+                 "relative_rise": round(moved / max(early_adapted, 1e-9), 4)}))
+        elif late_adapted >= 0.35:
+            findings.append(Finding(
+                "GENERATION_STILL_REPETITIVE", "warning",
+                "A third or more of every 8-gram in the guarded output is a "
+                "repeat. The guard hides the runaway loops; the model still "
+                "cannot write without them.",
+                {"repeated_late": round(late_adapted, 4)}))
+    if early_raw is not None and late_raw is not None and late_raw >= 0.90:
+        findings.append(Finding(
+            "RAW_OUTPUT_DEGENERATE", "critical",
+            "Unguarded output is 90% repeated 8-grams by the end of the run: "
+            "the model is emitting loops, not text.",
+            {"repeated_late": round(late_raw, 4),
+             "repeated_early": round(early_raw, 4)}))
+
+    texts = [s["text"] for b in blocks[-thirds:] for s in b["samples"]
+             if s["mode"] in ("raw_text", "adapted_text")]
+    if texts:
+        qualities = [text_quality(t) for t in texts]
+        entropies = [q["char_entropy"] for q in qualities
+                     if _finite(q["char_entropy"])]
+        runs = [q["longest_run"] for q in qualities]
+        wordy = [q["word_like_rate"] for q in qualities
+                 if _finite(q["word_like_rate"])]
+        conson = [q["max_consonant_run"] for q in qualities]
+        if entropies and statistics.fmean(entropies) < 2.5:
+            findings.append(Finding(
+                "LOW_CHARACTER_ENTROPY", "warning",
+                "The output carries about as much information per character "
+                "as a small alphabet. That is the shape of a loop, not of "
+                "language.",
+                {"mean_char_entropy": round(statistics.fmean(entropies), 3),
+                 "samples": len(entropies)}))
+        if runs and max(runs) >= 40:
+            findings.append(Finding(
+                "REPETITION_RUNAWAY", "warning",
+                "One character repeated without interruption for "
+                f"{max(runs)} characters in a single sample.",
+                {"longest_run": max(runs)}))
+        if conson and max(conson) >= 6:
+            findings.append(Finding(
+                "OUTPUT_NOT_WORD_SHAPED", "warning",
+                "The output carries runs of consonants no English word has - "
+                "six or more in a row without a vowel. This is what 'bfjjk "
+                "hkdkgm' measures, and it survives into the guarded output.",
+                {"max_consonant_run": max(conson),
+                 "samples": len(conson)}))
+        elif wordy and statistics.fmean(wordy) < 0.55:
+            findings.append(Finding(
+                "OUTPUT_MOSTLY_NON_ALPHA", "warning",
+                "Most whitespace-separated tokens in the late output contain "
+                "no letters at all.",
+                {"word_like_rate": round(statistics.fmean(wordy), 3),
+                 "samples": len(wordy)}))
+
+    domains = sorted({s["domain"] for b in blocks for s in b["samples"]
+                      if s.get("domain")})
+    worst = None
+    if domains and late:
+        worst = max(domains, key=lambda d: (
+            statistics.fmean([s["repeated"] for b in late
+                              for s in adapted(b) if s["domain"] == d] or [0])
+            if any(s["domain"] == d for b in late for s in adapted(b))
+            else -1))
+    return _verdict(2, findings, {
+        "blocks": len(blocks),
+        "steps": [blocks[0]["step"], blocks[-1]["step"]],
+        "domains": domains,
+        "held_out_early": round(early_val, 4) if early_val else None,
+        "held_out_late": round(late_val, 4) if late_val else None,
+        "repeated_early": round(early_adapted, 4) if early_adapted is not None else None,
+        "repeated_late": round(late_adapted, 4) if late_adapted is not None else None,
+        "raw_repeated_late": round(late_raw, 4) if late_raw is not None else None,
+        "worst_domain": worst,
+    })

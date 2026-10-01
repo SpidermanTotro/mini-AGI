@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from minagi.training_doctor import (diagnose, diagnose_experts, diagnose_file,
+                                      diagnose_generation, parse_samples, text_quality,
                                       diagnose_retention)
 
 
@@ -196,6 +197,133 @@ class RetentionTests(unittest.TestCase):
     def test_history_without_domains_is_not_a_crash(self):
         report = diagnose_retention([{"kind": "val", "step": 1, "val": 1.0}])
         self.assertEqual(report["observations"]["evaluations"], 0)
+
+
+class GenerationTests(unittest.TestCase):
+    """
+    Generation quality, measured against the loss falling beside it.
+
+    These metrics are shape-based on purpose. The corpus is code, chess,
+    arithmetic and prose in one run, so a word list flags valid output as
+    misspelled; what actually breaks is repetition, entropy and word-shape.
+    """
+
+    def block(self, step, val, adapted, raw, domain="stories", text=""):
+        return {"step": step, "val": val, "chars_m": 1.0, "minutes": step,
+                "experts": 64,
+                "samples": [{"domain": domain, "mode": "raw", "repeated": raw},
+                            {"domain": domain, "mode": "adapted",
+                             "repeated": adapted}]
+                            + ([{"domain": domain, "mode": "raw_text",
+                                 "text": text}] if text else [])}
+
+    def test_text_metrics_see_a_repeat_loop(self):
+        loop = "the " * 60
+        q = text_quality(loop)
+        self.assertGreater(q["repeated_ngrams"], 0.5)
+        run = text_quality("a" * 200)
+        self.assertGreaterEqual(run["longest_run"], 200)
+
+    def test_text_metrics_see_prose(self):
+        prose = ("Once upon a time there was a small cat that lived near the "
+                 "river bank and every morning it walked along the water. ")
+        q = text_quality(prose)
+        self.assertLess(q["repeated_ngrams"], 0.05)
+        self.assertGreater(q["char_entropy"], 3.5)
+        self.assertGreater(q["word_like_rate"], 0.8)
+        self.assertLess(q["max_consonant_run"], 6)
+
+    def test_alphabet_soup_is_caught(self):
+        # The soup is entirely alphabetic, so a "is this a word" ratio cannot
+        # see it - this is why the consonant run is the metric.
+        soup = "bfjjk hkdkgm tkkitk yigj gibvbrish " * 12
+        q = text_quality(soup)
+        self.assertGreaterEqual(q["max_consonant_run"], 6)
+        self.assertGreater(q["repeated_ngrams"], 0.5)
+
+    def test_loss_falling_while_output_collapses_is_critical(self):
+        blocks = []
+        for i in range(9):
+            early = i < 3
+            blocks.append(self.block(
+                i, 2.0 if early else 1.0,
+                adapted=0.02 if early else 0.60,
+                raw=0.10 if early else 0.98))
+        report = diagnose_generation(blocks)
+        self.assertEqual(report["health"], "critical")
+        self.assertIn("LOSS_IMPROVING_OUTPUT_COLLAPSING",
+                      {f["code"] for f in report["findings"]})
+
+    def test_loss_and_output_improving_together_is_clean(self):
+        blocks = [self.block(i, 2.0 if i < 3 else 1.0,
+                             adapted=0.60 if i < 3 else 0.02,
+                             raw=0.95 if i < 3 else 0.05)
+                  for i in range(9)]
+        report = diagnose_generation(blocks)
+        codes = {f["code"] for f in report["findings"]}
+        self.assertNotIn("LOSS_IMPROVING_OUTPUT_COLLAPSING", codes)
+        self.assertNotIn("LOSS_AND_OUTPUT_DIVERGING", codes)
+
+    def test_mild_opposite_movement_warns_without_calling_it_collapse(self):
+        blocks = [self.block(i, 2.0 if i < 3 else 1.0,
+                             adapted=0.090 if i < 3 else 0.116,
+                             raw=0.10)
+                  for i in range(9)]
+        report = diagnose_generation(blocks)
+        codes = {f["code"] for f in report["findings"]}
+        self.assertIn("LOSS_AND_OUTPUT_DIVERGING", codes)
+        self.assertNotIn("LOSS_IMPROVING_OUTPUT_COLLAPSING", codes)
+
+    def test_unimproved_loss_masks_no_collapse(self):
+        # loss flat, output collapsing: reported as repetitive, not as the
+        # divergence case, because there was no improvement to diverge from
+        blocks = [self.block(i, 1.0, adapted=0.02 if i < 3 else 0.60,
+                             raw=0.10) for i in range(9)]
+        report = diagnose_generation(blocks)
+        codes = {f["code"] for f in report["findings"]}
+        self.assertNotIn("LOSS_IMPROVING_OUTPUT_COLLAPSING", codes)
+        self.assertIn("GENERATION_STILL_REPETITIVE", codes)
+
+    def test_no_blocks_is_not_a_crash(self):
+        self.assertEqual(diagnose_generation([])["observations"]["blocks"], 0)
+
+
+class SampleParsingTests(unittest.TestCase):
+    def test_it_reads_the_shape_the_sampler_writes(self):
+        body = """# session started
+==============================================================
+
+step 2,037   4.2M of 7,874M characters (0.05%)   25 min   85 experts
+grad norm 3.42 against a clip of 1   clipping
+held-out loss 2.3895 +/-0.0443 nats   3.4474 bits/char   perplexity 10.91
+  arithmetic 2.023   chat 2.729
+repeats 87% of 8-grams, greedy with no guard
+==============================================================
+
+--- stories ---
+prompt: 'Once upon a time '
+[raw]  repeated 8-grams 97%
+the the the the the the the the the the
+[adapted]  repeated 8-grams 2%
+thing, sorely thering asted condiler.
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                         encoding="utf-8") as fh:
+            fh.write(body)
+            path = fh.name
+        try:
+            blocks = parse_samples(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(len(blocks), 1)
+        block = blocks[0]
+        self.assertEqual(block["step"], 2037)
+        self.assertEqual(block["experts"], 85)
+        self.assertAlmostEqual(block["val"], 2.3895)
+        modes = [s["mode"] for s in block["samples"]]
+        self.assertEqual(modes, ["raw", "raw_text", "adapted", "adapted_text"])
+        self.assertIn("the the the", block["samples"][1]["text"])
+        self.assertIn("sorely", block["samples"][3]["text"])
 
 
 class TrainingDoctorTests(unittest.TestCase):

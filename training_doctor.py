@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 
 from minagi.training_doctor import (diagnose, diagnose_experts,
-                                      diagnose_file, diagnose_retention,
+                                      diagnose_file, diagnose_generation,
+                                      diagnose_retention, parse_samples,
                                       read_history, resume_preflight)
 
 
@@ -27,16 +28,24 @@ def main():
                    help="read the target as a per-expert routing history "
                         "(runs/expert_history.jsonl) and report where routing "
                         "mass actually went")
+    p.add_argument("--samples", action="store_true",
+                   help="read the target as a samples log (runs/samples.txt) "
+                        "and measure what the model actually wrote against "
+                        "the held-out loss falling beside it")
     p.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     p.add_argument("--out", help="also write the report to this path")
     args = p.parse_args()
 
-    rows = read_history(args.target)
+    # Only the two history-shaped modes read JSONL; samples.txt and a weights
+    # directory are not JSONL and must not be parsed as if they were.
     if args.preflight:
         report = resume_preflight(args.target)
+    elif args.samples:
+        report = diagnose_generation(parse_samples(args.target))
     elif args.experts:
-        report = diagnose_experts(rows)
+        report = diagnose_experts(read_history(args.target))
     else:
+        rows = read_history(args.target)
         report = diagnose(rows)
         retention = diagnose_retention(rows)
         for finding in retention["findings"]:
@@ -64,6 +73,14 @@ def main():
         print("restored moments:", o.get("restored_moments"),
               "| without a step counter:", o.get("restored_without_step"))
         print("first step after restore:", o.get("first_step_raised") or "ok")
+    elif args.samples:
+        print("blocks:", o.get("blocks"), "| steps:", o.get("steps"))
+        print("held-out loss:", o.get("held_out_early"), "->",
+              o.get("held_out_late"))
+        print("repeated 8-grams (guarded):", o.get("repeated_early"), "->",
+              o.get("repeated_late"),
+              "| raw:", o.get("raw_repeated_late"))
+        print("worst domain:", o.get("worst_domain"))
     elif args.experts:
         print("experts:", o.get("experts"), "| characters:", o.get("chars"))
         print("routing preference:", o.get("preference"),
