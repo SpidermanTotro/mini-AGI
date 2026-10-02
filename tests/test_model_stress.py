@@ -1,8 +1,10 @@
 import unittest
 import tempfile
+import json
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import torch
 
 from minagi.decode import contrastive_generate
@@ -252,6 +254,86 @@ class ModelStressTests(unittest.TestCase):
             loss = sum(p.square().mean() for p in resumed.parameters())
             loss.backward()
             resumed_optimizer.step()
+
+    def test_expert_step_counter_is_stored_exactly_not_guessed_on_restore(self):
+        """
+        An expert's Adam counter must survive a restart as a number, not a guess.
+
+        `_stamp_missing_steps` gives a restored moment the largest counter it
+        can find. That is right for a trunk tensor and wrong for an expert:
+        one paged out and in for the first time has no history, and one
+        restored beside a trunk that has trained longer than the expert has is
+        handed a counter that was never its own. Both come back, and both are
+        silently wrong - the bias correction Adam applies to `exp_avg` is a
+        function of that counter, so the expert resumes on a learning-rate
+        schedule it was never on.
+        """
+        from dataclasses import asdict
+
+        from minagi.recur import RecurCoder, RecurConfig
+        from minagi.store import load, save
+
+        cfg = RecurConfig(vocab_size=265, d_model=8, n_head=2, d_ff=12,
+                          block=8, max_steps=2, use_pool=True, pool_experts=4,
+                          pool_d_ff=16, pool_depth=1, pool_top_k=2, pool_max=4)
+
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+                "os.environ", {"MINI_AGI_CONFIG": "",
+                               "GREENLIGHT_CONFIG": ""}):
+            weights = Path(root) / "weights"
+            torch.manual_seed(3)
+            model = RecurCoder(cfg)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+            loss = sum(p.square().mean() for p in model.parameters())
+            loss.backward()
+            optimizer.step()
+
+            # the trunk has trained for four steps; expert 0 only for two.
+            for _ in range(3):
+                loss = sum(p.square().mean() for p in model.parameters())
+                loss.backward()
+                optimizer.step()
+            expert = {n: p for n, p in model.named_parameters()
+                      if n.startswith("pool.experts.0.")}
+            self.assertTrue(expert, "the model has no expert 0 tensors")
+            for p in expert.values():
+                optimizer.state[p]["step"] = torch.tensor(2.0)
+
+            save(model, str(weights), step=4, opt=optimizer, cfg=asdict(cfg))
+
+            written = np.load(weights / "experts" / "e00000.npz")
+            leaves = {n.rsplit(".", 2)[-2] for n in expert}
+            for leaf in leaves:
+                self.assertIn(leaf + "_t", written.files,
+                              "the expert file carries no step counter, so a "
+                              "restart can only guess one")
+                self.assertEqual(float(written[leaf + "_t"]), 2.0)
+
+            torch.manual_seed(3)
+            resumed = RecurCoder(cfg)
+            resumed_optimizer = torch.optim.AdamW(resumed.parameters(), lr=1e-2)
+            load(resumed, str(weights), opt=resumed_optimizer,
+                 device=torch.device("cpu"))
+
+            trunk = resumed_optimizer.state[resumed.tok_emb.weight]
+            restored = {n: p for n, p in resumed.named_parameters()
+                        if n.startswith("pool.experts.0.")}
+            for n, p in restored.items():
+                state = resumed_optimizer.state[p]
+                self.assertIn("step", state, n + " came back with no counter")
+                self.assertEqual(float(state["step"]), 2.0,
+                                 n + " inherited a counter that was never "
+                                 "its own")
+            self.assertGreater(float(trunk["step"]), 2.0)
+
+            # and the counter must not be counted twice into the parameters
+            entry = next(e for e in json.loads(
+                (weights / "manifest.json").read_text())["experts"]
+                if e["id"] == 0)
+            self.assertEqual(entry["params"], sum(
+                p.numel() for n, p in model.named_parameters()
+                if n.startswith("pool.experts.0.")),
+                "the saved parameter count includes the counter")
 
     def test_paged_checkpoint_rejects_missing_expert_file(self):
         import train

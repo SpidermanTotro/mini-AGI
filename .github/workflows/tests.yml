@@ -57,8 +57,11 @@ jobs:
         run: GREENLIGHT_LIFECYCLE=1 python -m unittest tests.test_command_contract -v
         timeout-minutes: 45
       - name: The Doctor CLI exits non-zero on a critical finding
+        # The fixture is committed. It used to live under runs/, which is
+        # gitignored, so this step referenced a file no checkout had and no
+        # test created - a green run would have proved nothing.
         run: |
-          python training_doctor.py --json runs/doctor-selftest/history.jsonl             > /tmp/doctor.json && { echo "expected a non-zero exit"; exit 1; } || true
+          python training_doctor.py --json tests/fixtures/doctor_selftest_history.jsonl             > /tmp/doctor.json && { echo "expected a non-zero exit"; exit 1; } || true
           python -c "
           import json, sys
           report = json.load(open('/tmp/doctor.json'))

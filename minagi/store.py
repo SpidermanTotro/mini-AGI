@@ -151,7 +151,8 @@ def save(model, path, step=None, val=None, opt=None, cfg=None, verbose=False,
         arrays.update(moments.get(i, {}))
         n = _savez(os.path.join(path, EXPERTS, "e%05d.npz" % i), arrays)
         total += n
-        params = sum(a.size for k, a in arrays.items() if not k.endswith(("_m", "_v")))
+        params = sum(a.size for k, a in arrays.items()
+                     if not k.endswith(("_m", "_v", "_t")))
         entries.append({"id": i, "file": "e%05d.npz" % i,
                         "params": int(params), "bytes": int(n),
                         "moments": any(k.endswith("_m") for k in arrays),
@@ -205,6 +206,14 @@ def _expert_moments(opt, model):
             i, leaf = expert_index(n), expert_leaf(n)
             out.setdefault(i, {})[leaf + "_m"] = st["exp_avg"].cpu().numpy()
             out[i][leaf + "_v"] = st["exp_avg_sq"].cpu().numpy()
+            # The counter those moments were actually written at, not one
+            # reconstructed on restore. An expert paged out and back in for the
+            # first time holds no history at all, and an expert restored after
+            # the optimizer's own counter has moved on has a different one from
+            # its new neighbours - both are guessed wrong by `_stamp_missing_steps`.
+            if st.get("step") is not None:
+                out[i][leaf + "_t"] = np.asarray(
+                    float(st["step"].detach().cpu()))
     return out
 
 
@@ -377,7 +386,7 @@ def load(model, path, opt=None, device=None, strict=False, verbose=False):
         if f.endswith(".npz"):
             z = np.load(f)
             for leaf in z.files:
-                if leaf.endswith(("_m", "_v")):
+                if leaf.endswith(("_m", "_v", "_t")):
                     continue                       # optimiser state, not weights
                 if leaf.startswith("b") and "_" in leaf:
                     b, nm = leaf[1:].split("_", 1)
@@ -478,6 +487,11 @@ def _load_expert_moments(opt, model, path):
             st = opt.state[p]
             st["exp_avg"] = m.to(device=p.device, dtype=p.dtype)
             st["exp_avg_sq"] = v.to(device=p.device, dtype=p.dtype)
+            if (leaf + "_t") in z.files:
+                # the counter these moments were written at, not a guessed one.
+                # fused AdamW wants it on the parameter's device.
+                st["step"] = torch.tensor(float(z[leaf + "_t"]),
+                                          device=p.device)
 
 
 def summarise(path):

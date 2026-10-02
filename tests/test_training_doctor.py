@@ -1,8 +1,14 @@
+import io
 import json
 import os
+import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+from unittest.mock import patch
 
+import training_doctor as training_doctor_cli
 from minagi.training_doctor import (diagnose, diagnose_experts, diagnose_file,
                                       diagnose_generation, parse_samples, text_quality,
                                       diagnose_retention)
@@ -635,3 +641,55 @@ class MissedFailureTests(unittest.TestCase):
         report = diagnose_retention(rows)
         self.assertNotIn("DOMAIN_FORGOTTEN",
                          {f["code"] for f in report["findings"]})
+
+
+class CommandLineExitTests(unittest.TestCase):
+    """
+    The exit code is the only part of the Doctor an automated caller reads.
+
+    `--json` used to print its report and return, so a critical finding exited
+    0 and CI recorded a dead run as healthy. Asserting the status in a unit
+    test needs a subprocess or a caught SystemExit, because main() raises
+    rather than returns - which is also why nothing caught it before.
+    """
+
+    fixture = Path(__file__).parent / "fixtures" / "doctor_selftest_history.jsonl"
+
+    def run_cli(self, *argv):
+        out = io.StringIO()
+        with patch.object(sys, "argv", ["training_doctor.py", *argv]), \
+                redirect_stdout(out):
+            with self.assertRaises(SystemExit) as raised:
+                training_doctor_cli.main()
+        return raised.exception.code, out.getvalue()
+
+    def test_a_critical_finding_exits_non_zero_as_json(self):
+        code, printed = self.run_cli("--json", str(self.fixture))
+        report = json.loads(printed)
+        self.assertEqual(report["health"], "critical")
+        self.assertIn("NO_EVIDENCE", {f["code"] for f in report["findings"]})
+        self.assertEqual(code, 1)
+
+    def test_a_healthy_history_exits_zero(self):
+        # real_rows() alone is not healthy: it carries no per-domain losses, so
+        # retention cannot be judged and the doctor says so. A run the doctor
+        # must call healthy needs the evidence it asks for.
+        rows = real_rows()
+        for row in rows:
+            if row["kind"] == "val":
+                row["per_domain"] = {"stories": 1.4 - row["step"] * 0.2,
+                                     "code": 1.5 - row["step"] * 0.2}
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "history.jsonl"
+            path.write_text("\n".join(json.dumps(r) for r in rows),
+                            encoding="utf-8")
+            code, printed = self.run_cli("--json", str(path))
+        report = json.loads(printed)
+        self.assertEqual(report["health"], "healthy", report["findings"])
+        self.assertEqual(code, 0)
+
+    def test_the_committed_fixture_exists(self):
+        # CI's Doctor step runs against this file. It used to point at a path
+        # under runs/, which is gitignored: nothing committed it and nothing
+        # created it, so the step could not have passed on a fresh checkout.
+        self.assertTrue(self.fixture.is_file(), self.fixture)
