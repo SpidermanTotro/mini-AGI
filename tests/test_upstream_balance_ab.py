@@ -13,6 +13,7 @@ from minagi.recur import RecurConfig
 from minagi.recur import RecurCoder
 from train import build_paged
 from minagi import store
+from tools.compare_balance_ab import compare
 
 
 REQUIRED_METRICS = (
@@ -60,6 +61,25 @@ class UpstreamBalanceABContractTests(unittest.TestCase):
                 "n_experts": 80,
                 "resume_ok": False,
             })
+
+    def test_comparator_requires_utilization_gain_without_loss_regression(self):
+        base = {"heldout_loss": 0.65, "expert_utilization": 0.60,
+                "capacity_drop": 0.01, "n_experts": 64, "resume_ok": True}
+        better = dict(base, expert_utilization=0.75, heldout_loss=0.64)
+        ok, _ = compare(base, better, 0.0)
+        self.assertTrue(ok)
+        worse_loss = dict(better, heldout_loss=0.66)
+        ok, _ = compare(base, worse_loss, 0.0)
+        self.assertFalse(ok)
+
+    def test_comparator_keeps_restart_as_hard_gate(self):
+        base = {"heldout_loss": 0.65, "expert_utilization": 0.60,
+                "capacity_drop": 0.01, "n_experts": 64, "resume_ok": True}
+        candidate = dict(base, expert_utilization=0.90, heldout_loss=0.60,
+                         resume_ok=False)
+        ok, reason = compare(base, candidate, 0.0)
+        self.assertFalse(ok)
+        self.assertIn("restart/resume", reason)
 
     def test_missing_behavior_metric_blocks_promotion(self):
         with self.assertRaisesRegex(ValueError, "expert_utilization"):
