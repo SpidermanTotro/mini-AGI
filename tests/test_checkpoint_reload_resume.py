@@ -78,10 +78,9 @@ class PagedCheckpointReloadResumeTests(unittest.TestCase):
             tokens = torch.tensor([[1, 2, 3, 4]], dtype=torch.long)
             loss = model(tokens)[0].float().square().mean()
             loss.backward()
-            # PagedPool owns the slot/expert Adam-state handoff.
-            pool.before_step(opt)
+            # attach_optimiser installs PagedPool's pre/post step hooks, so
+            # the production path is simply opt.step().
             opt.step()
-            pool.after_step(opt)
             opt.zero_grad(set_to_none=True)
             store.save(model, tmp, step=1, val=1.0, opt=opt,
                        cfg=cfg.__dict__)
@@ -95,9 +94,8 @@ class PagedCheckpointReloadResumeTests(unittest.TestCase):
 
             loss = restarted(tokens)[0].float().square().mean()
             loss.backward()
-            restarted_pool.before_step(restarted_opt)
+            # attach_optimiser owns the expert-moment handoff around this step.
             restarted_opt.step()  # historical restart failure boundary
-            restarted_pool.after_step(restarted_opt)
 
 
 if __name__ == "__main__":
