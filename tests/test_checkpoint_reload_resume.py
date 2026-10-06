@@ -1,4 +1,9 @@
+import json
+import os
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 
 import torch
@@ -52,6 +57,91 @@ class CheckpointReloadResumeTests(unittest.TestCase):
                        in restarted_opt.state.values() if "step" in state]
             self.assertTrue(stepped)
             self.assertTrue(all(step == 2.0 for step in stepped))
+
+
+    def test_cold_process_reload_resumes_evaluates_and_generates(self):
+        """R5 gate: a separate Python process can cold-load and keep working."""
+        model, cfg = self._model()
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        self._step(model, opt)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store.save(model, tmp, step=1, val=1.0, opt=opt,
+                       cfg=cfg.__dict__)
+
+            script = textwrap.dedent(r"""
+                import json
+                import os
+                import sys
+                import torch
+
+                from minagi.recur import RecurCoder, RecurConfig
+                from minagi import store
+
+                path = sys.argv[1]
+                cfg = RecurConfig(
+                    vocab_size=265, d_model=8, n_head=1, d_ff=16, block=8,
+                    n_prelude=1, n_recur=1, n_coda=0, max_steps=1,
+                    use_pool=True, pool_experts=2, pool_d_ff=8, pool_top_k=1,
+                    pool_max=2,
+                )
+                model = RecurCoder(cfg)
+                opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+                man = store.load(model, path, opt=opt, device="cpu")
+
+                tokens = torch.tensor([[1, 2, 3, 4]], dtype=torch.long)
+                with torch.no_grad():
+                    before = model(tokens)[0]
+                assert torch.isfinite(before).all()
+
+                loss = model(tokens)[0].float().square().mean()
+                loss.backward()
+                opt.step()
+                opt.zero_grad(set_to_none=True)
+
+                steps = [float(state["step"]) for state in opt.state.values()
+                         if "step" in state]
+                assert steps and all(step == 2.0 for step in steps), steps
+
+                # Generation smoke: use the same autoregressive forward path
+                # without depending on a tokenizer or CLI process.
+                generated = tokens.clone()
+                with torch.no_grad():
+                    for _ in range(2):
+                        logits = model(generated[:, -cfg.block:])[0]
+                        next_token = logits[:, -1].argmax(dim=-1, keepdim=True)
+                        generated = torch.cat((generated, next_token), dim=1)
+                assert generated.shape == (1, 6)
+                assert torch.isfinite(model(generated[:, -cfg.block:])[0]).all()
+
+                print(json.dumps({
+                    "manifest_step": man.get("step"),
+                    "optimizer_steps": steps,
+                    "generated_tokens": generated.tolist(),
+                }))
+            """)
+
+            env = os.environ.copy()
+            env["PYTHONPATH"] = os.getcwd() + os.pathsep + env.get(
+                "PYTHONPATH", "")
+            proc = subprocess.run(
+                [sys.executable, "-c", script, tmp],
+                cwd=os.getcwd(),
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=60,
+            )
+            self.assertEqual(
+                proc.returncode, 0,
+                msg=f"cold restart failed:\nSTDOUT:\n{proc.stdout}\n"
+                    f"STDERR:\n{proc.stderr}",
+            )
+            report = json.loads(proc.stdout.strip().splitlines()[-1])
+            self.assertEqual(report["manifest_step"], 1)
+            self.assertTrue(all(step == 2.0
+                                for step in report["optimizer_steps"]))
+            self.assertEqual(len(report["generated_tokens"][0]), 6)
 
 
 class PagedCheckpointReloadResumeTests(unittest.TestCase):
