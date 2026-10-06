@@ -36,6 +36,22 @@ def health():
     return jsonify({"ok": True, "mode": "read-only"})
 
 
+@app.get("/api/v1/capabilities")
+def capabilities():
+    """Stable discovery contract shared by iPhone and future Android clients."""
+    return jsonify({
+        "api_version": 1,
+        "platform": "linux",
+        "features": {
+            "status": True,
+            "doctor": True,
+            "telemetry": True,
+            "experiments": False,
+            "training_control": False,
+        },
+    })
+
+
 if __name__ == "__main__":
     app.run(host=os.environ.get("GREENLIGHT_COMPANION_HOST", "127.0.0.1"),
             port=int(os.environ.get("GREENLIGHT_COMPANION_PORT", "8765")))
