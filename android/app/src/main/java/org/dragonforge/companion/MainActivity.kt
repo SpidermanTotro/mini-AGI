@@ -1,0 +1,93 @@
+package org.dragonforge.companion
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+
+data class HostStatus(val training: Boolean, val step: Int?, val loss: Double?,
+    val experts: Int?, val vram: Double?, val doctor: String)
+
+private suspend fun fetchStatus(base: String): HostStatus = withContext(Dispatchers.IO) {
+    val connection = (URL(base.trimEnd('/') + "/api/v1/status").openConnection()
+        as HttpURLConnection).apply {
+        connectTimeout = 4000
+        readTimeout = 4000
+        requestMethod = "GET"
+    }
+    try {
+        require(connection.responseCode in 200..299) { "HTTP " + connection.responseCode }
+        val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+        HostStatus(
+            json.optBoolean("training", false),
+            if (json.isNull("step")) null else json.getInt("step"),
+            if (json.isNull("loss")) null else json.getDouble("loss"),
+            if (json.isNull("experts")) null else json.getInt("experts"),
+            if (json.isNull("vram_gb")) null else json.getDouble("vram_gb"),
+            json.optString("doctor", "unknown"))
+    } finally { connection.disconnect() }
+}
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent { MaterialTheme { DragonForgeScreen() } }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DragonForgeScreen() {
+    var host by remember { mutableStateOf("http://192.168.1.2:8765") }
+    var status by remember { mutableStateOf<HostStatus?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    fun refresh() {
+        scope.launch {
+            try {
+                status = fetchStatus(host)
+                error = null
+            } catch (e: Exception) { error = e.message ?: "Connection failed" }
+        }
+    }
+
+    Scaffold(topBar = { TopAppBar(title = { Text("DragonForge") }) }) { padding ->
+        Column(
+            Modifier.padding(padding).padding(20.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("Samsung S21 Ultra companion", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(value = host, onValueChange = { host = it },
+                label = { Text("Linux host") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth())
+            Button(onClick = ::refresh) { Text("Refresh") }
+            status?.let {
+                HorizontalDivider()
+                Text("Training", style = MaterialTheme.typography.titleMedium)
+                Text("State: " + if (it.training) "Running" else "Idle")
+                Text("Step: " + (it.step?.toString() ?: "—"))
+                Text("Loss: " + (it.loss?.toString() ?: "—"))
+                Text("Experts: " + (it.experts?.toString() ?: "—"))
+                Text("VRAM: " + (it.vram?.let { v -> "%.2f GB".format(v) } ?: "—"))
+                HorizontalDivider()
+                Text("Training Doctor", style = MaterialTheme.typography.titleMedium)
+                Text("Health: " + it.doctor.replaceFirstChar(Char::uppercase))
+            }
+            error?.let { Text("Connection problem: " + it) }
+            Text("Read-only v0.1 — training controls are disabled.")
+        }
+    }
+}
