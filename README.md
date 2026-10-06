@@ -1,8 +1,48 @@
-# Greenlight Recur
+# DragonForge — Greenlight Recur
 
-**Greenlight Recur** is an experimental local AI research project derived from [volotat/mini-AGI](https://github.com/volotat/mini-AGI), focused on making mini-AGI easier to test, reproduce, harden, and run on consumer hardware.
+**DragonForge** is the developing project identity for this fork. **Greenlight Recur**
+remains the name of the hardened Linux training/model line and its historical
+development work.
 
-The original mini-AGI architecture and research project are by its upstream author. Greenlight Recur builds on that work rather than claiming to replace it.
+This is an experimental, local-first AI research project derived from
+[volotat/mini-AGI](https://github.com/volotat/mini-AGI), focused on making the
+architecture easier to test, reproduce, diagnose, harden, and run on consumer
+hardware.
+
+The original mini-AGI architecture and research project are by its upstream
+author. DragonForge / Greenlight builds on that work rather than claiming to
+replace it.
+
+## Platforms and current status
+
+| Platform / track | Status | Purpose |
+|---|---|---|
+| **Linux / Greenlight Recur** | Active core | Training, checkpoints, expert paging, diagnostics, evaluation and local inference |
+| **Training Doctor v2** | Active | Restart, artifact, routing, retention, history and generation diagnostics |
+| **Router-balance A/B** | Experimental | Controlled comparison against the existing exploration mechanism; not promoted to stable without GPU evidence |
+| **iPhone / DragonForge** | v0.1 in development | Native SwiftUI companion for Linux status, telemetry and Doctor health |
+| **Android / DragonForge** | Coming next | Native companion using the same versioned Linux API |
+
+Linux remains the source of truth for model training. Mobile clients are
+companions, not replacements for the CUDA training runtime.
+
+### Stable versus experimental
+
+A green CI run means the tested software revision passed its regression suite; it
+does **not** prove a model-quality improvement. Training changes are kept isolated
+until controlled evidence supports promotion.
+
+The router-balance candidate therefore remains experimental even though its unit
+tests pass. Its A/B tooling freezes baseline and candidate configs so that the
+starting checkpoint, corpus, seed, steps and command can be held constant while
+only the routing mechanism changes.
+
+The mobile API is currently deliberately **read-only**. Remote training controls
+stay disabled until secure pairing/authentication is implemented.
+
+See [CHANGELOG.md](CHANGELOG.md) for development milestones,
+[UPSTREAM-HARDENING.md](UPSTREAM-HARDENING.md) for integration policy, and
+[mobile/README.md](mobile/README.md) for the iPhone/Android roadmap.
 
 ## Greenlight command line
 
