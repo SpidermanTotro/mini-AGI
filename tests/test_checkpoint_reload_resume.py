@@ -174,8 +174,17 @@ class PagedCheckpointReloadResumeTests(unittest.TestCase):
             # the production path is simply opt.step().
             opt.step()
             opt.zero_grad(set_to_none=True)
+
+            # Saving a paged checkpoint must park each resident expert together
+            # with that expert's own Adam moments. Capture the persisted values
+            # so reconstruction can prove identity, not merely "doesn't crash".
             store.save(model, tmp, step=1, val=1.0, opt=opt,
                        cfg=cfg.__dict__)
+            expert_id = next(e for e in pool.slots if e >= 0)
+            persisted = pool.tiers.fetch(pool._f(expert_id), count=False)
+            expected_m = persisted["w1_m"].clone()
+            expected_v = persisted["w1_v"].clone()
+            self.assertTrue(torch.count_nonzero(expected_v).item() > 0)
 
             restarted, _, restarted_pool, _ = build_paged(
                 tmp, torch.device("cpu"), resident=1, ram_capacity=2)
@@ -183,6 +192,19 @@ class PagedCheckpointReloadResumeTests(unittest.TestCase):
                 restarted.parameters(), lr=1e-3)
             restarted_pool.attach_optimiser(restarted_opt)
             store._load_optim(restarted_opt, restarted, tmp)
+
+            # Re-admit the same expert, then run PagedPool's production
+            # pre-step hook directly. It must replace slot-indexed checkpoint
+            # moments with this expert's own persisted history.
+            restarted_pool.swap_to([expert_id])
+            restarted_pool._own_moments()
+            slot = restarted_pool.slots.index(expert_id)
+            state = restarted_opt.state[restarted_pool.w1]
+            self.assertTrue(torch.allclose(
+                state["exp_avg"][slot].cpu(), expected_m, rtol=2e-2, atol=1e-6))
+            self.assertTrue(torch.allclose(
+                state["exp_avg_sq"][slot].cpu(), expected_v,
+                rtol=2e-2, atol=1e-6))
 
             loss = restarted(tokens)[0].float().square().mean()
             loss.backward()
