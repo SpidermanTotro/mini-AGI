@@ -13,6 +13,16 @@ class CompanionAPITests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"ok": True, "mode": "read-only"})
 
+    def test_capabilities_keep_remote_control_disabled(self):
+        response = app.test_client().get("/api/v1/capabilities")
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data["api_version"], 1)
+        self.assertEqual(data["platform"], "linux")
+        self.assertTrue(data["features"]["status"])
+        self.assertTrue(data["features"]["doctor"])
+        self.assertFalse(data["features"]["training_control"])
+
     def test_status_reads_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "status.json")
