@@ -20,8 +20,10 @@ import java.net.URL
 data class HostStatus(val training: Boolean, val step: Int?, val loss: Double?,
     val experts: Int?, val vram: Double?, val doctor: String)
 
-private suspend fun fetchStatus(base: String): HostStatus = withContext(Dispatchers.IO) {
-    val connection = (URL(base.trimEnd('/') + "/api/v1/status").openConnection()
+private const val CLIENT_API_VERSION = 1
+
+private fun getJson(base: String, path: String): JSONObject {
+    val connection = (URL(base.trimEnd('/') + path).openConnection()
         as HttpURLConnection).apply {
         connectTimeout = 4000
         readTimeout = 4000
@@ -29,15 +31,31 @@ private suspend fun fetchStatus(base: String): HostStatus = withContext(Dispatch
     }
     try {
         require(connection.responseCode in 200..299) { "HTTP " + connection.responseCode }
-        val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
-        HostStatus(
-            json.optBoolean("training", false),
-            if (json.isNull("step")) null else json.getInt("step"),
-            if (json.isNull("loss")) null else json.getDouble("loss"),
-            if (json.isNull("experts")) null else json.getInt("experts"),
-            if (json.isNull("vram_gb")) null else json.getDouble("vram_gb"),
-            json.optString("doctor", "unknown"))
+        return JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
     } finally { connection.disconnect() }
+}
+
+private suspend fun checkCompatibility(base: String) = withContext(Dispatchers.IO) {
+    val json = getJson(base, "/api/v1/capabilities")
+    val api = json.getInt("api_version")
+    val minimum = json.optInt("api_min_client_version", api)
+    require(CLIENT_API_VERSION in minimum..api) {
+        "Incompatible DragonForge API: host supports " + minimum + ".." + api
+    }
+    require(json.optString("platform") == "linux") { "DragonForge host is not Linux" }
+    val features = json.getJSONObject("features")
+    require(features.optBoolean("status")) { "Host does not provide status telemetry" }
+}
+
+private suspend fun fetchStatus(base: String): HostStatus = withContext(Dispatchers.IO) {
+    val json = getJson(base, "/api/v1/status")
+    HostStatus(
+        json.optBoolean("training", false),
+        if (json.isNull("step")) null else json.getInt("step"),
+        if (json.isNull("loss")) null else json.getDouble("loss"),
+        if (json.isNull("experts")) null else json.getInt("experts"),
+        if (json.isNull("vram_gb")) null else json.getDouble("vram_gb"),
+        json.optString("doctor", "unknown"))
 }
 
 class MainActivity : ComponentActivity() {
@@ -58,6 +76,7 @@ fun DragonForgeScreen() {
     fun refresh() {
         scope.launch {
             try {
+                checkCompatibility(host)
                 status = fetchStatus(host)
                 error = null
             } catch (e: Exception) { error = e.message ?: "Connection failed" }
