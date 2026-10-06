@@ -339,6 +339,10 @@ class PagedPool(nn.Module):
                              persistent=False)
         self.explore_bias = 0.0          # the bonus at zero use, in logits
         self.explore_steps = 1000.0      # how far back `recent` looks
+        # Experimental alternative to exploration: a differentiable router
+        # balance penalty. Zero preserves the established Greenlight path.
+        self.balance = 0.0
+        self._balance = None
         self._bias = None
         self._exploring = False
         # what the router alone would have admitted this forward - the only
@@ -532,6 +536,9 @@ class PagedPool(nn.Module):
         self._voted = False
         self._mask = None
         self._bias = None
+        self._balance = None
+        if explore and self.balance > 0 and self.explore_bias > 0:
+            raise ValueError("pool balance and explore_bias are mutually exclusive")
         self._exploring = bool(explore and self.explore_bias > 0)
         if self._exploring:
             n = self._n
@@ -556,6 +563,21 @@ class PagedPool(nn.Module):
         a picked expert contributes.
         """
         return self._bias
+
+    def usage_share(self):
+        """Recent admission share, normalized for the balance experiment."""
+        n = self._n
+        r = self.recent[:n].float()
+        total = r.sum()
+        if float(total) <= 0:
+            return torch.full((n,), 1.0 / max(n, 1), device=r.device)
+        return r / total
+
+    def note_balance(self, term):
+        self._balance = term if self._balance is None else self._balance + term
+
+    def balance_term(self):
+        return self._balance
 
     def admitting(self):
         """Whether this forward may still admit experts."""
