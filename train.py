@@ -2027,7 +2027,11 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
         _c = _load_cfg()
         pool.explore_bias = float(_get_cfg(_c, "pool.explore_bias", 0.0))
         pool.explore_steps = float(_get_cfg(_c, "pool.explore_steps", 1000))
-    except Exception:
+        pool.balance = float(_get_cfg(_c, "pool.balance", 0.0))
+        if pool.balance > 0 and pool.explore_bias > 0:
+            raise ValueError(
+                "pool.balance and pool.explore_bias are mutually exclusive")
+    except (FileNotFoundError, KeyError):
         pass
     ever = cfgd.get("pool_ever")
     if ever:
