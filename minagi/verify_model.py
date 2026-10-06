@@ -4,8 +4,16 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
+
 
 REQUIRED_BUNDLES = ("manifest.json", "core.npz", "routers.npz")
+
+
+def _bundle_params(path):
+    """Count tensor elements in an npz bundle from the artifact itself."""
+    with np.load(path, allow_pickle=False) as bundle:
+        return sum(int(np.prod(bundle[name].shape)) for name in bundle.files)
 
 
 def inspect_model_artifact(path):
@@ -16,30 +24,41 @@ def inspect_model_artifact(path):
         raise FileNotFoundError(
             f"incomplete model artifact {root}: missing {', '.join(missing)}"
         )
-
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     entries = manifest.get("experts")
     if not isinstance(entries, list) or not entries:
         raise ValueError("model manifest contains no expert file inventory")
-
     declared = int(manifest.get("n_experts", len(entries)))
     if declared != len(entries):
         raise ValueError(
-            f"model manifest declares {declared} experts but inventories "
-            f"{len(entries)}"
+            f"model manifest declares {declared} experts but inventories {len(entries)}"
         )
-
     missing_experts = [
-        entry.get("file")
-        for entry in entries
-        if not entry.get("file")
-        or not (root / "experts" / entry["file"]).is_file()
+        entry.get("file") for entry in entries
+        if not entry.get("file") or not (root / "experts" / entry["file"]).is_file()
     ]
     if missing_experts:
         raise FileNotFoundError(
             "model artifact is missing expert files: "
             + ", ".join(str(name) for name in missing_experts[:8])
         )
+
+    expert_params = []
+    for entry in entries:
+        if "params" not in entry:
+            raise ValueError(f"expert inventory {entry.get('file')} has no parameter count")
+        n = int(entry["params"])
+        if n <= 0:
+            raise ValueError(
+                f"expert inventory {entry.get('file')} has invalid parameter count {n}"
+            )
+        expert_params.append(n)
+
+    core_params = _bundle_params(root / "core.npz")
+    router_params = _bundle_params(root / "routers.npz")
+    experts_params = sum(expert_params)
+    cfg = manifest.get("cfg") or {}
+    resident = max(0, min(int(cfg.get("pool_resident", declared)), declared))
 
     return {
         "path": str(root),
@@ -51,6 +70,14 @@ def inspect_model_artifact(path):
         "d_ff": manifest.get("d_ff"),
         "paged": bool(manifest.get("paged")),
         "total_bytes": manifest.get("total_bytes"),
+        "params": {
+            "core": core_params,
+            "routers": router_params,
+            "experts": experts_params,
+            "total": core_params + router_params + experts_params,
+            "resident_experts": resident,
+            "resident": core_params + router_params + sum(expert_params[:resident]),
+        },
     }
 
 
