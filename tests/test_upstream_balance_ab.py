@@ -9,7 +9,7 @@ import tempfile
 
 import torch
 
-from minagi.model import ModelConfig
+from minagi.recur import RecurConfig
 from minagi.recur import RecurCoder
 from train import build_paged
 from minagi import store
@@ -74,7 +74,7 @@ class UpstreamBalanceABContractTests(unittest.TestCase):
 
 class UpstreamBalanceImplementationTests(unittest.TestCase):
     def _paged_model(self):
-        cfg = ModelConfig(
+        cfg = RecurConfig(
             vocab_size=265, d_model=8, n_head=1, d_ff=16, block=8,
             n_prelude=1, n_recur=1, n_coda=0, max_steps=1,
             use_pool=True, pool_experts=4, pool_d_ff=8, pool_top_k=1,
