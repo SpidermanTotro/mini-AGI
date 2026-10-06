@@ -9,6 +9,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -68,12 +69,19 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DragonForgeScreen() {
-    var host by remember { mutableStateOf("http://192.168.1.2:8765") }
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("dragonforge", 0) }
+    var host by remember { mutableStateOf(prefs.getString("linux_host", "") ?: "") }
     var status by remember { mutableStateOf<HostStatus?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     fun refresh() {
+        if (host.isBlank()) {
+            error = "Enter your Linux host address first"
+            return
+        }
+        prefs.edit().putString("linux_host", host.trim()).apply()
         scope.launch {
             try {
                 checkCompatibility(host)
@@ -90,7 +98,7 @@ fun DragonForgeScreen() {
         ) {
             Text("Samsung S21 Ultra companion", style = MaterialTheme.typography.titleMedium)
             OutlinedTextField(value = host, onValueChange = { host = it },
-                label = { Text("Linux host") }, singleLine = true,
+                label = { Text("Linux host, e.g. http://192.168.1.50:8765") }, singleLine = true,
                 modifier = Modifier.fillMaxWidth())
             Button(onClick = ::refresh) { Text("Refresh") }
             status?.let {
