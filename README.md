@@ -1,8 +1,25 @@
 # Greenlight Recur
 
-**Greenlight Recur** is an experimental local AI research project derived from [volotat/mini-AGI](https://github.com/volotat/mini-AGI), focused on making mini-AGI easier to test, reproduce, harden, and run on consumer hardware.
+> **Greenlight R5 — active reliability hardening**
+>
+> Greenlight Recur is validating the complete continual-training lifecycle: train → checkpoint → terminate → rebuild model and optimiser → reload → resume → evaluate/generate. The normal on-disk AdamW restart regression is covered; paged expert/optimiser restart coverage is being validated in [PR #30](https://github.com/SpidermanTotro/mini-AGI/pull/30). R5 remains experimental until those gates are green and merged.
+
+**Greenlight Recur** is an experimental, local-first AI research project derived from [volotat/mini-AGI](https://github.com/volotat/mini-AGI). It focuses on making mini-AGI easier to test, reproduce, harden, and run on consumer hardware while keeping failures visible instead of treating a green loss curve as proof that the whole training lifecycle works.
 
 The original mini-AGI architecture and research project are by its upstream author. Greenlight Recur builds on that work rather than claiming to replace it.
+
+### Current Greenlight reliability gates
+
+| Gate | Status |
+|---|---|
+| Training Doctor and regression suite | **Available on `main`** |
+| Normal checkpoint → fresh model/AdamW → resume | **R5 regression added; validating** |
+| Paged expert + optimiser checkpoint → reload → resume | **R5 validation in progress** |
+| Serving context / KV-cache rollover regression | **Covered** |
+| Upstream compatibility review | **Ongoing** |
+| AGI claim | **No — experimental research software** |
+
+R5 is intentionally reliability-first. Architecture and router experiments stay isolated until checkpoint/restart behaviour is trustworthy.
 
 ## Greenlight command line
 
