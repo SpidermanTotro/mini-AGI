@@ -211,6 +211,51 @@ the optimiser can take a step, plus `--experts` for routing distribution and
 | 1 Oct 2026 | Training Doctor v2: restart preflight, routing, retention, generation |
 | 1 Oct 2026 | Lifecycle coverage gap closed: contract test plus opt-in subprocess test |
 
+
+## Greenlight evidence gates and unified diagnostics (6 October 2026)
+
+October 6 concentrated on making training changes harder to promote without
+evidence.
+
+**PR #22** added checkpoint parameter accounting to the model-artifact
+verifier. Core, router, expert, total and resident parameter counts are now
+derived from the stored bundles, and malformed expert inventories are rejected.
+It merged as `1022a5d` after the Python 3.11/3.14 CI matrix passed.
+
+**PR #23** added a promotion contract specifically for the newer upstream
+router-balance research. A candidate must report held-out loss, expert
+utilization, capacity-drop rate, expert count and a successful restart/resume
+result. It merged as `853222a`. The contract itself changes no training math.
+
+**PR #24** made the existing diagnostics reachable from one Greenlight Doctor
+entry point. Runtime/config checks can now be combined with checkpoint
+verification, real restore + AdamW resume preflight, history diagnosis, expert
+routing diagnosis and generation diagnosis. Critical deep findings propagate
+as command failure. It merged as `b983b5d` after both supported Python lanes
+passed.
+
+**PR #25** is deliberately experimental and must not be described as stable
+Greenlight behavior while it remains outside `main`. It isolates an
+upstream-style differentiable router-balance candidate from Greenlight's
+existing exploration mechanism. Its early red CI runs include a test-fixture
+failure: the test began with experts resident and bypassed the first-admission
+path it was meant to exercise. The fixture was corrected to force the real
+path. GitHub retains those superseded runs, so historical red entries should
+not be counted as independent current regressions.
+
+The candidate also adds machine-readable A/B reporting and comparison so
+promotion can be based on the PR #23 evidence contract rather than manually
+transcribed numbers.
+
+### Milestone timeline addition
+
+| Date | Milestone |
+| --- | --- |
+| 6 Oct 2026 | PR #22 adds checkpoint parameter accounting |
+| 6 Oct 2026 | PR #23 establishes router-balance A/B promotion contract |
+| 6 Oct 2026 | PR #24 unifies deep diagnostics under Greenlight Doctor |
+| 6 Oct 2026 | PR #25 begins isolated router-balance experiment; not stable |
+
 ---
 
 This document is intentionally conservative. New milestones should be added
