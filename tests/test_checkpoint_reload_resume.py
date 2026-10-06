@@ -54,5 +54,51 @@ class CheckpointReloadResumeTests(unittest.TestCase):
             self.assertTrue(all(step == 2.0 for step in stepped))
 
 
+class PagedCheckpointReloadResumeTests(unittest.TestCase):
+    def test_paged_checkpoint_reloads_and_steps_with_own_expert_moments(self):
+        """R5 regression for the path used by continual paged training."""
+        from train import build_paged
+
+        seed = RecurCoder(RecurConfig(
+            vocab_size=265, d_model=8, n_head=1, d_ff=16, block=8,
+            n_prelude=1, n_recur=1, n_coda=0, max_steps=1,
+            use_pool=True, pool_experts=2, pool_d_ff=8, pool_top_k=1,
+            pool_max=2,
+        ))
+        cfg = seed.cfg
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store.save(seed, tmp, step=0, val=1.0, cfg=cfg.__dict__)
+
+            model, _, pool, _ = build_paged(
+                tmp, torch.device("cpu"), resident=1, ram_capacity=2)
+            opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+            pool.attach_optimiser(opt)
+
+            tokens = torch.tensor([[1, 2, 3, 4]], dtype=torch.long)
+            loss = model(tokens)[0].float().square().mean()
+            loss.backward()
+            # PagedPool owns the slot/expert Adam-state handoff.
+            pool.before_step(opt)
+            opt.step()
+            pool.after_step(opt)
+            opt.zero_grad(set_to_none=True)
+            store.save(model, tmp, step=1, val=1.0, opt=opt,
+                       cfg=cfg.__dict__)
+
+            restarted, _, restarted_pool, _ = build_paged(
+                tmp, torch.device("cpu"), resident=1, ram_capacity=2)
+            restarted_opt = torch.optim.AdamW(
+                restarted.parameters(), lr=1e-3)
+            restarted_pool.attach_optimiser(restarted_opt)
+            store._load_optim(restarted_opt, restarted, tmp)
+
+            loss = restarted(tokens)[0].float().square().mean()
+            loss.backward()
+            restarted_pool.before_step(restarted_opt)
+            restarted_opt.step()  # historical restart failure boundary
+            restarted_pool.after_step(restarted_opt)
+
+
 if __name__ == "__main__":
     unittest.main()
