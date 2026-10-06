@@ -146,6 +146,62 @@ class CheckpointReloadResumeTests(unittest.TestCase):
             self.assertEqual(len(report["generated_tokens"][0]), 6)
 
 
+class ContinualProgressResumeTests(unittest.TestCase):
+    def test_manifest_round_trips_continual_progress_state(self):
+        """R5: cumulative reader/controller state survives the checkpoint."""
+        model = RecurCoder(RecurConfig(
+            vocab_size=265, d_model=8, n_head=1, d_ff=16, block=8,
+            n_prelude=1, n_recur=1, n_coda=0, max_steps=1,
+            use_pool=True, pool_experts=2, pool_d_ff=8, pool_top_k=1,
+            pool_max=2,
+        ))
+        extra = {
+            "read_chars": 12_345_678,
+            "read_nats": 9_876_543.25,
+            "plasticity": {"scale": 0.625},
+            "context_now": 4096,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            store.save(model, tmp, step=77, val=1.25,
+                       cfg=model.cfg.__dict__, extra=extra)
+            with open(os.path.join(tmp, "manifest.json"), encoding="utf-8") as fh:
+                man = json.load(fh)
+
+        self.assertEqual(man["step"], 77)
+        self.assertEqual(man["read_chars"], extra["read_chars"])
+        self.assertEqual(man["read_nats"], extra["read_nats"])
+        self.assertEqual(man["plasticity"], extra["plasticity"])
+        self.assertEqual(man["context_now"], extra["context_now"])
+
+    def test_reader_resume_changes_lane_rng_without_losing_reproducibility(self):
+        """R5: a restart continues to a new deterministic reader sequence."""
+        from train import _lanes
+
+        with tempfile.TemporaryDirectory() as root:
+            subject = os.path.join(root, "stories")
+            os.makedirs(subject)
+            paths = []
+            for i in range(3):
+                path = os.path.join(subject, f"{i}.txt")
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write((f"file-{i}-" * 1024))
+                paths.append(path)
+
+            fresh = _lanes(paths, seed=1234, roots=[root], resume=0)[0]
+            again = _lanes(paths, seed=1234, roots=[root], resume=0)[0]
+            resumed = _lanes(
+                paths, seed=1234, roots=[root], resume=12_345_678)[0]
+
+            # Compare the generators directly: same checkpoint state is
+            # reproducible, while a different cumulative read position moves
+            # the restarted reader onto a different deterministic sequence.
+            fresh_draws = fresh.rng.integers(0, 2**31, size=8).tolist()
+            again_draws = again.rng.integers(0, 2**31, size=8).tolist()
+            resumed_draws = resumed.rng.integers(0, 2**31, size=8).tolist()
+            self.assertEqual(fresh_draws, again_draws)
+            self.assertNotEqual(fresh_draws, resumed_draws)
+
+
 class PagedCheckpointReloadResumeTests(unittest.TestCase):
     def test_paged_checkpoint_reloads_and_steps_with_own_expert_moments(self):
         """R5 regression for the path used by continual paged training."""
