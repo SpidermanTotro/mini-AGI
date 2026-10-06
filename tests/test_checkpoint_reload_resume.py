@@ -162,8 +162,15 @@ class ContinualProgressResumeTests(unittest.TestCase):
             "context_now": 4096,
         }
         with tempfile.TemporaryDirectory() as tmp:
-            store.save(model, tmp, step=77, val=1.25,
-                       cfg=model.cfg.__dict__, extra=extra)
+            # Continual training checkpoints are paged. Seed the directory,
+            # rebuild through the production paged path, then save the same
+            # extra progress fields train.py supplies at every checkpoint.
+            store.save(model, tmp, step=0, val=1.25, cfg=model.cfg.__dict__)
+            from train import build_paged
+            paged, cfg, pool, _ = build_paged(
+                tmp, torch.device("cpu"), resident=1, ram_capacity=2)
+            store.save(paged, tmp, step=77, val=1.25,
+                       cfg=cfg.__dict__, extra=extra)
             with open(os.path.join(tmp, "manifest.json"), encoding="utf-8") as fh:
                 man = json.load(fh)
 
