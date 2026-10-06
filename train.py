@@ -753,8 +753,11 @@ def _cmd_read(args, dry_shadow=None):
         t_seen = max((float(st.get("step", 0))
                       for st in opt.state.values() if "step" in st), default=0)
         print(f"  optimiser moments restored ({t_seen:,.0f} steps of history)")
-    except Exception as e:                     # never let this stop a run
-        print(f"  [note] optimiser moments not restored: {e}")
+    except Exception as e:
+        raise RuntimeError(
+            "checkpoint optimiser state could not be restored; refusing "
+            "to continue with silently reinitialised AdamW state"
+        ) from e
     grower = AutoGrow(grow_k=args.grow_k, max_experts=10_000_000,
                       mem_frac_max=args.grow_mem_frac,
                       dying_frac_max=args.grow_dying_frac,
@@ -896,8 +899,11 @@ def _cmd_read(args, dry_shadow=None):
         t_seen = max((float(st.get("step", 0))
                       for st in opt.state.values() if "step" in st), default=0)
         print(f"  optimiser moments restored ({t_seen:,.0f} steps of history)")
-    except Exception as e:                     # never let this stop a run
-        print(f"  [note] optimiser moments not restored: {e}")
+    except Exception as e:
+        raise RuntimeError(
+            "checkpoint optimiser state could not be restored; refusing "
+            "to continue with silently reinitialised AdamW state"
+        ) from e
     grower = AutoGrow(grow_k=args.grow_k, max_experts=10_000_000,
                       mem_frac_max=args.grow_mem_frac,
                       dying_frac_max=args.grow_dying_frac,
