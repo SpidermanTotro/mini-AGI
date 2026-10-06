@@ -34,12 +34,17 @@ class RouterBalanceExperimentTests(unittest.TestCase):
             pool.balance = 3.5e-4
             pool.explore_bias = 0.0
             pool.recent[:] = torch.tensor([8.0, 1.0, 1.0, 0.0])
-            # Make all experts initially reachable in the backing store.
+            # Back the experts with tensors, then clear the resident card so
+            # this forward must execute the first-admission path where the
+            # balance term is intentionally computed.
             for i in range(4):
                 pool.tiers.put(i, {
                     "w1": torch.zeros(8, 4), "w3": torch.zeros(8, 4),
                     "w2": torch.zeros(4, 8),
                 }, dirty=False)
+            pool.slot_to_expert[:] = -1
+            pool.expert_to_slot[:] = -1
+            pool._n_resident = 0
             route = PooledMLP(pool, d_model=4, top_k=1,
                               grad_checkpoint=False)
             route.train()
