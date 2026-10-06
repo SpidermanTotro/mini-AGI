@@ -42,9 +42,7 @@ class RouterBalanceExperimentTests(unittest.TestCase):
                     "w1": torch.zeros(8, 4), "w3": torch.zeros(8, 4),
                     "w2": torch.zeros(4, 8),
                 }, dirty=False)
-            pool.slot_to_expert[:] = -1
-            pool.expert_to_slot[:] = -1
-            pool._n_resident = 0
+            pool.slots[:] = [-1] * len(pool.slots)
             route = PooledMLP(pool, d_model=4, top_k=1,
                               grad_checkpoint=False)
             route.train()
