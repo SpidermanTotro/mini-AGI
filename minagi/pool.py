@@ -386,8 +386,19 @@ class PooledMLP(nn.Module):
                 # it, and the most-asked-for experts are admitted until the
                 # card is full. No gradient: admission decides what is
                 # reachable, the routing below decides weights.
+                E = p.router_rows()
+                # Admission itself is a discrete choice and remains outside
+                # autograd. The balance auxiliary is deliberately computed
+                # before entering no_grad so it can train router rows.
+                if (float(getattr(p, "balance", 0.0) or 0.0) > 0
+                        and self.training and torch.is_grad_enabled()
+                        and p.balance_term() is None):
+                    zg = F.linear((flat + self.depth_emb).detach(),
+                                  self.router.weight[:E]).float()
+                    P = F.softmax(zg, -1).mean(0)
+                    p.note_balance(p.balance * (
+                        E * (p.usage_share().to(P.device) * P).sum() - 1.0))
                 with torch.no_grad():
-                    E = p.router_rows()
                     z = F.linear(flat + self.depth_emb,
                                  self.router.weight[:E]).float()
 
@@ -398,17 +409,6 @@ class PooledMLP(nn.Module):
                         mass.index_add_(0, tq.indices.reshape(-1),
                                         tq.values.reshape(-1).float())
                         return mass
-                    if (float(getattr(p, "balance", 0.0) or 0.0) > 0
-                            and self.training and torch.is_grad_enabled()
-                            and p.balance_term() is None):
-                        # Only router rows learn from the balancing signal:
-                        # detach trunk activations, then compare current router
-                        # probability with recent expert admission share.
-                        zg = F.linear((flat + self.depth_emb).detach(),
-                                      self.router.weight[:E]).float()
-                        P = F.softmax(zg, -1).mean(0)
-                        p.note_balance(p.balance * (
-                            E * (p.usage_share().to(P.device) * P).sum() - 1.0))
                     if bias is None:
                         mass, merit = requested(z), None
                     else:
