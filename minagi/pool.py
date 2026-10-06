@@ -405,6 +405,16 @@ class PooledMLP(nn.Module):
                         # alone would have asked for is kept for the prune
                         # clock, which counts only that
                         mass, merit = requested(z + bias[:E]), requested(z)
+                # Experimental deterministic balance term. The trunk state is
+                # detached so only router rows learn from this auxiliary loss.
+                if (float(getattr(p, "balance", 0.0) or 0.0) > 0
+                        and self.training and torch.is_grad_enabled()
+                        and p.balance_term() is None):
+                    zg = F.linear((flat + self.depth_emb).detach(),
+                                  self.router.weight[:E]).float()
+                    P = F.softmax(zg, -1).mean(0)
+                    p.note_balance(p.balance * (
+                        E * (p.usage_share().to(P.device) * P).sum() - 1.0))
                 p.admit(mass, merit)
                 rows = p.resident_rows()
             # only the rows belonging to the experts in VRAM, in slot order,
