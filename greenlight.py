@@ -88,6 +88,14 @@ def main(argv=None):
         p.add_argument('--config', type=Path, default=ROOT / 'config-16gb.yaml')
         p.add_argument('--device', choices=('cpu', 'cuda'), default='cuda')
         if name == 'doctor':
+            p.add_argument('--weights', type=Path,
+                           help='optional checkpoint to verify and resume-preflight')
+            p.add_argument('--history', type=Path,
+                           help='optional training history.jsonl to diagnose')
+            p.add_argument('--expert-history', type=Path,
+                           help='optional expert_history.jsonl to diagnose routing')
+            p.add_argument('--samples', type=Path,
+                           help='optional samples.txt to diagnose generation')
             continue
         p.add_argument('--train', type=Path, default=ROOT / 'data/train')
         p.add_argument('--held-out', type=Path, default=ROOT / 'data/val')
@@ -129,7 +137,32 @@ def main(argv=None):
             print(result[0]['completion'])
             return 0
         if args.command == 'doctor':
-            return doctor(args)
+            status = doctor(args)
+            from minagi.training_doctor import (
+                diagnose_experts, diagnose_file, diagnose_generation,
+                parse_samples, read_history, resume_preflight,
+            )
+            from minagi.verify_model import inspect_model_artifact
+            checks = []
+            if args.weights:
+                inspect_model_artifact(args.weights)
+                checks.append(("resume", resume_preflight(args.weights)))
+            if args.history:
+                checks.append(("history", diagnose_file(args.history)))
+            if args.expert_history:
+                checks.append(("experts", diagnose_experts(
+                    read_history(args.expert_history))))
+            if args.samples:
+                checks.append(("samples", diagnose_generation(
+                    parse_samples(args.samples))))
+            for name, report in checks:
+                print(f'{name}: {report["health"]}')
+                for finding in report["findings"]:
+                    print(f'  [{finding["severity"]}] {finding["code"]}: '
+                          f'{finding["message"]}')
+                if report["health"] == "critical":
+                    status = 1
+            return status
         if not args.config.is_file():
             raise ValueError(f'config does not exist: {args.config}')
         if args.passes < 1 or args.max_new_tokens < 1:
