@@ -80,6 +80,40 @@ class GreenlightCliTests(unittest.TestCase):
                     benchmark.main()
 
 
+    def test_doctor_runs_optional_deep_checks_and_fails_on_critical(self):
+        critical = {"health": "critical", "findings": [{
+            "severity": "critical", "code": "RESTART_STEP_FAILED",
+            "message": "resume failed",
+        }]}
+        healthy = {"health": "healthy", "findings": []}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "config.yaml"
+            config.write_text("model: {}")
+            weights = root / "weights"
+            weights.mkdir()
+            history = root / "history.jsonl"
+            history.write_text("")
+            with patch("greenlight.doctor", return_value=0), \
+                 patch("minagi.verify_model.inspect_model_artifact"), \
+                 patch("minagi.training_doctor.resume_preflight", return_value=critical), \
+                 patch("minagi.training_doctor.diagnose_file", return_value=healthy):
+                status = greenlight.main([
+                    "doctor", "--device", "cpu", "--config", str(config),
+                    "--weights", str(weights), "--history", str(history),
+                ])
+        self.assertEqual(status, 1)
+
+    def test_doctor_without_optional_artifacts_keeps_runtime_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.yaml"
+            config.write_text("model: {}")
+            with patch("greenlight.doctor", return_value=0):
+                self.assertEqual(greenlight.main([
+                    "doctor", "--device", "cpu", "--config", str(config)
+                ]), 0)
+
+
 class HeldOutFileTests(unittest.TestCase):
     def test_evaluator_accepts_single_file(self):
         from minagi.stream import FolderEvaluator
