@@ -41,6 +41,9 @@ def capabilities():
     """Stable discovery contract shared by iPhone and future Android clients."""
     return jsonify({
         "api_version": 1,
+        "api_min_client_version": 1,
+        "project": "DragonForge",
+        "core": "Greenlight Recur",
         "platform": "linux",
         "features": {
             "status": True,
