@@ -5,6 +5,14 @@ They define the measurements an A/B candidate must report before promotion.
 """
 
 import unittest
+import tempfile
+
+import torch
+
+from minagi.model import ModelConfig
+from minagi.recur import RecurCoder
+from train import build_paged
+from minagi import store
 
 
 REQUIRED_METRICS = (
@@ -61,6 +69,62 @@ class UpstreamBalanceABContractTests(unittest.TestCase):
                 "n_experts": 80,
                 "resume_ok": True,
             })
+
+
+
+class UpstreamBalanceImplementationTests(unittest.TestCase):
+    def _paged_model(self):
+        cfg = ModelConfig(
+            vocab_size=265, d_model=8, n_head=1, d_ff=16, block=8,
+            n_prelude=1, n_recur=1, n_coda=0, max_steps=1,
+            use_pool=True, pool_experts=4, pool_d_ff=8, pool_top_k=1,
+            pool_max=4,
+        )
+        tmp = tempfile.TemporaryDirectory()
+        seed = RecurCoder(cfg)
+        store.save(seed, tmp.name, step=0, val=1.0, cfg=cfg.__dict__)
+        model, _, pool, _ = build_paged(
+            tmp.name, torch.device("cpu"), resident=2, ram_capacity=4)
+        model.train()
+        return tmp, model, pool
+
+    def test_balance_zero_is_exactly_off(self):
+        tmp, model, pool = self._paged_model()
+        try:
+            pool.balance = 0.0
+            x = torch.tensor([[1, 2, 3, 4]])
+            y = torch.tensor([[2, 3, 4, 5]])
+            _, loss = model(x, y)
+            self.assertEqual(float(model.pool_balance()), 0.0)
+            self.assertIsNone(pool.balance_term())
+            self.assertTrue(torch.isfinite(loss))
+        finally:
+            tmp.cleanup()
+
+    def test_positive_balance_is_finite_and_reaches_router_gradient(self):
+        tmp, model, pool = self._paged_model()
+        try:
+            pool.balance = 0.001
+            # Make recent use deliberately uneven so the balance term is
+            # non-zero and therefore has a meaningful router gradient.
+            pool.recent.zero_()
+            pool.recent[0] = 1.0
+            x = torch.tensor([[1, 2, 3, 4]])
+            y = torch.tensor([[2, 3, 4, 5]])
+            _, lm_loss = model(x, y)
+            term = model.pool_balance()
+            self.assertTrue(torch.isfinite(term))
+            self.assertNotEqual(float(term.detach()), 0.0)
+            (lm_loss + term).backward()
+            grads = [
+                m.router.weight.grad
+                for m in model.modules()
+                if hasattr(m, "router") and getattr(m.router, "weight", None) is not None
+            ]
+            self.assertTrue(any(g is not None and torch.isfinite(g).all()
+                                and float(g.abs().sum()) > 0 for g in grads))
+        finally:
+            tmp.cleanup()
 
 
 if __name__ == "__main__":
