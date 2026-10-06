@@ -58,6 +58,57 @@ class RouterBalanceExperimentTests(unittest.TestCase):
             # Detached trunk states mean this auxiliary term alone cannot bend x.
             self.assertIsNone(x.grad)
 
+    def test_even_usage_and_uniform_router_is_zero_balance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = self.make_pool(tmp)
+            pool.balance = 3.5e-4
+            pool.explore_bias = 0.0
+            pool.recent.fill_(1.0)
+            for i in range(4):
+                pool.tiers.put(i, {
+                    "w1": torch.zeros(8, 4), "w3": torch.zeros(8, 4),
+                    "w2": torch.zeros(4, 8),
+                }, dirty=False)
+            pool.slots[:] = [-1] * len(pool.slots)
+            route = PooledMLP(pool, d_model=4, top_k=1,
+                              grad_checkpoint=False)
+            route.train()
+            with torch.no_grad():
+                route.router.weight.zero_()
+            pool.begin_text(explore=True)
+            route(torch.zeros(1, 2, 4))
+            self.assertAlmostEqual(float(pool.balance_term().detach()), 0.0,
+                                   places=7)
+
+    def test_balance_term_resets_for_next_forward(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = self.make_pool(tmp)
+            pool.balance = 3.5e-4
+            pool.explore_bias = 0.0
+            pool.note_balance(torch.tensor(1.0, requires_grad=True))
+            self.assertIsNotNone(pool.balance_term())
+            pool.begin_text(explore=True)
+            self.assertIsNone(pool.balance_term())
+
+    def test_eval_forward_does_not_create_balance_term(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = self.make_pool(tmp)
+            pool.balance = 3.5e-4
+            pool.explore_bias = 0.0
+            for i in range(4):
+                pool.tiers.put(i, {
+                    "w1": torch.zeros(8, 4), "w3": torch.zeros(8, 4),
+                    "w2": torch.zeros(4, 8),
+                }, dirty=False)
+            pool.slots[:] = [-1] * len(pool.slots)
+            route = PooledMLP(pool, d_model=4, top_k=1,
+                              grad_checkpoint=False)
+            route.eval()
+            pool.begin_text(explore=False)
+            with torch.no_grad():
+                route(torch.zeros(1, 2, 4))
+            self.assertIsNone(pool.balance_term())
+
 
 if __name__ == "__main__":
     unittest.main()
