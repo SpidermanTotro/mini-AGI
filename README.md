@@ -19,9 +19,9 @@ replace it.
 |---|---|---|
 | **Linux / Greenlight Recur** | Active core | Training, checkpoints, expert paging, diagnostics, evaluation and local inference |
 | **Training Doctor v2** | Active | Restart, artifact, routing, retention, history and generation diagnostics |
-| **Router-balance A/B** | Experimental | Controlled comparison against the existing exploration mechanism; not promoted to stable without GPU evidence |
-| **iPhone / DragonForge** | v0.1 in development | Native SwiftUI companion for Linux status, telemetry and Doctor health |
-| **Android / DragonForge** | Coming next | Native companion using the same versioned Linux API |
+| **Router-balance A/B** | Experimental — PR #25 | Controlled comparison against the existing exploration mechanism; not promoted to stable without GPU evidence |
+| **iPhone / DragonForge** | v0.1 in development — PR #27 | Native SwiftUI companion for Linux status, telemetry and Doctor health |
+| **Android / DragonForge** | Roadmap — PR #27 | Native companion planned to use the same versioned Linux API |
 
 Linux remains the source of truth for model training. Mobile clients are
 companions, not replacements for the CUDA training runtime.
