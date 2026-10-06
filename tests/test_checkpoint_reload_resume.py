@@ -87,7 +87,7 @@ class CheckpointReloadResumeTests(unittest.TestCase):
                 )
                 model = RecurCoder(cfg)
                 opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
-                man = store.load(model, path, opt=opt, device="cpu")
+                man, missing, unexpected = store.load(\n                    model, path, opt=opt, device="cpu")\n                assert not unexpected, unexpected
 
                 tokens = torch.tensor([[1, 2, 3, 4]], dtype=torch.long)
                 with torch.no_grad():
