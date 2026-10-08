@@ -123,9 +123,9 @@ class UpstreamBalanceABContractTests(unittest.TestCase):
             ("balance_strength", float("inf")),
         ):
             with self.subTest(field=field):
-                ok, _ = compare(report(), report(balance_strength=0.001,
-                                                  expert_utilization=0.75,
-                                                  **{field: value}))
+                candidate = report(balance_strength=0.001, expert_utilization=0.75)
+                candidate[field] = value
+                ok, _ = compare(report(), candidate)
                 self.assertFalse(ok)
 
     def test_missing_metadata_is_not_silently_accepted(self):
