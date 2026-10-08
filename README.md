@@ -8,6 +8,16 @@
 
 The original mini-AGI architecture and research project are by its upstream author. Greenlight Recur builds on that work rather than claiming to replace it.
 
+## DragonForge mobile companions (early v0.1)
+
+Greenlight Recur remains the **Linux training and model-reliability core**. DragonForge adds read-only mobile companion scaffolds without changing model training or requiring cloud inference:
+
+- **Android:** [native companion](android/README.md) for local status and Training Doctor telemetry; Android build CI is available.
+- **iPhone:** [SwiftUI companion](mobile/README.md) in `iphone/DragonForge/`, using the same versioned `/api/v1` Linux protocol.
+- **Linux companion API:** `companion/server.py`, read-only and bound to `127.0.0.1` by default. Do not expose its unauthenticated telemetry on an untrusted network; secure pairing and remote training controls are not implemented.
+
+The mobile clients are experimental. The R5 cold-restart and optimizer-state reliability gates remain separate from mobile UI work.
+
 ### Current Greenlight reliability gates
 
 | Gate | Status |
