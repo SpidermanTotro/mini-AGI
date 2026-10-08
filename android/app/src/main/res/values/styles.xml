@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.DragonForge" parent="android:style/Theme.Material.Light.NoActionBar" />
+</resources>
