@@ -1,71 +1,56 @@
-"""Contract tests for upstream router-balance experiments.
+"""Contract and implementation tests for experimental expert balancing."""
 
-These tests deliberately do not enable upstream behavior in stable training.
-They define the measurements an A/B candidate must report before promotion.
-"""
-
-import unittest
+import json
 import tempfile
+import unittest
+from pathlib import Path
 
 import torch
 
-from minagi.recur import RecurConfig
-from minagi.recur import RecurCoder
+from minagi.recur import RecurConfig, RecurCoder
 from train import build_paged
 from minagi import store
-from tools.compare_balance_ab import compare
+from tools.compare_balance_ab import compare, load, validate_result
 
 
-REQUIRED_METRICS = (
-    "heldout_loss",
-    "expert_utilization",
-    "capacity_drop",
-    "n_experts",
-    "resume_ok",
-)
+def report(**changes):
+    """Small comparable synthetic A/B report; not a training benchmark."""
+    data = {
+        "heldout_loss": 0.65,
+        "expert_utilization": 0.60,
+        "capacity_drop": 0.01,
+        "n_experts": 64,
+        "resume_ok": True,
+        "balance_strength": 0.0,
+        "initial_checkpoint_sha256": "a" * 64,
+        "training_corpus_sha256": "b" * 64,
+        "heldout_corpus_sha256": "c" * 64,
+        "seed": 42,
+        "training_steps": 100,
+    }
+    data.update(changes)
+    return data
 
 
 def validate_balance_ab_result(result):
-    missing = [name for name in REQUIRED_METRICS if name not in result]
-    if missing:
-        raise ValueError("missing A/B metrics: " + ", ".join(missing))
-    if result["heldout_loss"] < 0:
-        raise ValueError("heldout_loss must be nonnegative")
-    if not 0 <= result["expert_utilization"] <= 1:
-        raise ValueError("expert_utilization must be in [0, 1]")
-    if not 0 <= result["capacity_drop"] <= 1:
-        raise ValueError("capacity_drop must be in [0, 1]")
-    if int(result["n_experts"]) <= 0:
-        raise ValueError("n_experts must be positive")
-    if result["resume_ok"] is not True:
+    validate_result(result)
+    if not result["resume_ok"]:
         raise ValueError("candidate must pass restart/resume before promotion")
     return True
 
 
 class UpstreamBalanceABContractTests(unittest.TestCase):
     def test_complete_candidate_can_be_compared(self):
-        self.assertTrue(validate_balance_ab_result({
-            "heldout_loss": 0.65,
-            "expert_utilization": 0.8,
-            "capacity_drop": 0.01,
-            "n_experts": 64,
-            "resume_ok": True,
-        }))
+        self.assertTrue(validate_balance_ab_result(report()))
 
     def test_resume_failure_blocks_promotion(self):
         with self.assertRaisesRegex(ValueError, "restart/resume"):
-            validate_balance_ab_result({
-                "heldout_loss": 0.64,
-                "expert_utilization": 0.9,
-                "capacity_drop": 0.0,
-                "n_experts": 80,
-                "resume_ok": False,
-            })
+            validate_balance_ab_result(report(resume_ok=False))
 
     def test_comparator_requires_utilization_gain_without_loss_regression(self):
-        base = {"heldout_loss": 0.65, "expert_utilization": 0.60,
-                "capacity_drop": 0.01, "n_experts": 64, "resume_ok": True}
-        better = dict(base, expert_utilization=0.75, heldout_loss=0.64)
+        base = report()
+        better = report(balance_strength=0.001, expert_utilization=0.75,
+                        heldout_loss=0.64)
         ok, _ = compare(base, better, 0.0)
         self.assertTrue(ok)
         worse_loss = dict(better, heldout_loss=0.66)
@@ -73,23 +58,91 @@ class UpstreamBalanceABContractTests(unittest.TestCase):
         self.assertFalse(ok)
 
     def test_comparator_keeps_restart_as_hard_gate(self):
-        base = {"heldout_loss": 0.65, "expert_utilization": 0.60,
-                "capacity_drop": 0.01, "n_experts": 64, "resume_ok": True}
-        candidate = dict(base, expert_utilization=0.90, heldout_loss=0.60,
-                         resume_ok=False)
+        base = report()
+        candidate = report(balance_strength=0.001, expert_utilization=0.90,
+                           heldout_loss=0.60, resume_ok=False)
         ok, reason = compare(base, candidate, 0.0)
         self.assertFalse(ok)
         self.assertIn("restart/resume", reason)
 
     def test_missing_behavior_metric_blocks_promotion(self):
+        candidate = report()
+        del candidate["expert_utilization"]
         with self.assertRaisesRegex(ValueError, "expert_utilization"):
-            validate_balance_ab_result({
-                "heldout_loss": 0.64,
-                "capacity_drop": 0.0,
-                "n_experts": 80,
-                "resume_ok": True,
-            })
+            validate_balance_ab_result(candidate)
 
+    def test_rejects_cross_checkpoint_corpus_seed_and_step_comparisons(self):
+        base = report()
+        for key, value in (
+            ("initial_checkpoint_sha256", "e" * 64),
+            ("training_corpus_sha256", "f" * 64),
+            ("heldout_corpus_sha256", "d" * 64),
+            ("seed", 43),
+            ("training_steps", 101),
+        ):
+            with self.subTest(field=key):
+                candidate = report(balance_strength=0.001,
+                                   expert_utilization=0.75, **{key: value})
+                ok, reason = compare(base, candidate)
+                self.assertFalse(ok)
+                self.assertIn(key, reason)
+
+    def test_rejects_comparison_with_balance_enabled_on_baseline(self):
+        base = report(balance_strength=0.001)
+        candidate = report(balance_strength=0.001, expert_utilization=0.75)
+        ok, reason = compare(base, candidate)
+        self.assertFalse(ok)
+        self.assertIn("baseline", reason)
+
+    def test_capacity_drop_regression_blocks_promotion(self):
+        base = report()
+        candidate = report(balance_strength=0.001, expert_utilization=0.75,
+                           capacity_drop=0.04)
+        ok, reason = compare(base, candidate)
+        self.assertFalse(ok)
+        self.assertIn("capacity_drop", reason)
+        self.assertTrue(compare(base, candidate, max_capacity_drop_regression=0.03)[0])
+
+    def test_unapproved_expert_growth_blocks_promotion(self):
+        base = report()
+        candidate = report(balance_strength=0.001, expert_utilization=0.75,
+                           n_experts=80)
+        ok, reason = compare(base, candidate)
+        self.assertFalse(ok)
+        self.assertIn("expert_growth", reason)
+        self.assertTrue(compare(base, candidate, max_expert_growth=16)[0])
+
+    def test_invalid_and_nonfinite_values_fail_closed(self):
+        for field, value in (
+            ("heldout_loss", float("nan")),
+            ("expert_utilization", 1.1),
+            ("capacity_drop", -0.01),
+            ("n_experts", True),
+            ("resume_ok", "true"),
+            ("initial_checkpoint_sha256", "not-a-hash"),
+            ("balance_strength", float("inf")),
+        ):
+            with self.subTest(field=field):
+                ok, _ = compare(report(), report(balance_strength=0.001,
+                                                  expert_utilization=0.75,
+                                                  **{field: value}))
+                self.assertFalse(ok)
+
+    def test_missing_metadata_is_not_silently_accepted(self):
+        candidate = report(balance_strength=0.001, expert_utilization=0.75)
+        del candidate["training_corpus_sha256"]
+        ok, reason = compare(report(), candidate)
+        self.assertFalse(ok)
+        self.assertIn("training_corpus_sha256", reason)
+
+    def test_load_requires_valid_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            file = Path(tmp) / "baseline.json"
+            file.write_text(json.dumps(report()), encoding="utf-8")
+            self.assertEqual(load(file)["seed"], 42)
+            file.write_text(json.dumps({"heldout_loss": 0.5}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "missing"):
+                load(file)
 
 
 class UpstreamBalanceImplementationTests(unittest.TestCase):
