@@ -90,7 +90,9 @@ pool:
                           # (the higher the number is the more reads from the disk 
                           # are expected, so the reading/writing speed would be less)
   # Experimental alternative to explore_bias. Stable/baseline remains zero.
-  # Candidate A/B: set explore_bias: 0 and balance: 3.5e-4.
+  # Isolated A/B: keep explore_bias: 0 in both arms; balance: 0 vs 0.001.
+  # This differs from the default R5 exploration setting and needs its own
+  # separate production-reference arm before claiming an overall gain.
   # The training loader rejects enabling both at once.
   balance: 0.0
   explore_steps: 1000     # training steps "recent use" is averaged over
