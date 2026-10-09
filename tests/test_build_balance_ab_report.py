@@ -110,6 +110,27 @@ class BuildBalanceABReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no real routing usage"):
             self.build()
 
+    def test_capacity_uses_request_weighted_all_training_windows(self):
+        self.write_history(
+            {"kind": "step", "step": 10, "pool_dropped": 2,
+             "pool_requested": 10},
+            {"kind": "capacity", "step": 20, "pool_dropped": 1,
+             "pool_requested": 90},
+            {"kind": "val", "step": 20, "val": 0.75},
+        )
+        report = self.build()
+        self.assertAlmostEqual(report["capacity_drop"], 0.03)
+
+    def test_rejects_mixed_count_and_rate_capacity_telemetry(self):
+        self.write_history(
+            {"kind": "step", "step": 10, "pool_dropped": 2,
+             "pool_requested": 10},
+            {"kind": "step", "step": 20, "capacity_drop": 0.01},
+            {"kind": "val", "step": 20, "val": 0.75},
+        )
+        with self.assertRaisesRegex(ValueError, "cannot mix"):
+            self.build()
+
     def test_capacity_drop_without_denominator_fails_closed(self):
         self.write_history({"kind": "val", "val": 0.75},
                            {"kind": "step", "pool_dropped": 2})
