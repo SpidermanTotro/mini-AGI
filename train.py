@@ -260,11 +260,14 @@ def cmd_stream(args):
             el = max(time.time() - t0, 1e-9)
             vram = (f" vram {torch.cuda.max_memory_allocated()/1e6:.0f}MB"
                     if device.type == "cuda" else "")
+            # These are measured training forwards since the previous
+            # sample; pool_dropped(reset=True) clears this interval only.
+            capacity = _balance_capacity_sample(model)
             record("step", step=step, loss=float(loss.detach()), lr=lr,
                    grad_norm=float(gn), chars=seen, chars_per_s=seen / el,
                    context=streams.context, experts=model.pool.n_experts(),
                    vram_mb=(torch.cuda.max_memory_allocated() / 1e6
-                            if device.type == "cuda" else None))
+                            if device.type == "cuda" else None), **capacity)
             rp = (f" replay {streams.replays}" if args.replay > 0 else "")
             print(f"step {step:>6}/{args.steps} loss {float(loss.detach()):.4f} "
                   f"lr {lr:.2e} gn {float(gn):.2f} ctx {streams.context//1024}k "
@@ -274,8 +277,12 @@ def cmd_stream(args):
             v = evaluator.run(args.eval_chunks)
             se = v.pop("stderr", 0.0)
             val = float(np.mean(list(v.values())))
+            # Record expert use alongside held-out evaluation. Training
+            # capacity counters must not include subsequent eval forwards.
             record("val", step=step, val=val, stderr=se, ppl=math.exp(val),
-                   per_domain=dict(v), experts=model.pool.n_experts())
+                   per_domain=dict(v), experts=model.pool.n_experts(),
+                   **_balance_expert_use(model))
+            _balance_capacity_sample(model)  # discard eval-only routing
             print(f"  val {val:.4f} +/-{se:.4f} ppl {math.exp(val):.2f}   "
                   + "  ".join(f"{k.replace('data_','').replace('_char','')} "
                               f"{x:.3f}" for k, x in v.items()), flush=True)
@@ -1682,6 +1689,29 @@ def sample_now(model, tok, device, n_new=140, variants=None):
 # which is nothing against a ten-minute sample interval, but a training step
 # should not be held up by matplotlib, and a plotting bug must not be able to
 # stop a run that has been going for days.
+def _balance_capacity_sample(model):
+    """Read measured capacity counters; reset their interval, never infer zeros.
+
+    The streaming trainer records these only on its training step samples.
+    A missing hook yields no telemetry at all, so A/B report generation will
+    fail closed rather than manufacturing a zero capacity-drop rate.
+    """
+    fn = getattr(model, "pool_dropped", None)
+    if not callable(fn):
+        return {}
+    _, dropped, requested = fn()
+    return {"pool_dropped": int(dropped), "pool_requested": int(requested)}
+
+
+def _balance_expert_use(model):
+    """Snapshot per-expert use on a validation row, never mutate training."""
+    pool = getattr(model, "pool", None)
+    use = getattr(pool, "use", None)
+    if use is None:
+        return {}
+    return {"use": [float(value) for value in use.detach().cpu().tolist()]}
+
+
 def _dropped_note(model):
     """What the capacity bound threw away since the last sample, or nothing.
 
