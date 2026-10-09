@@ -146,6 +146,26 @@ class UpstreamBalanceABContractTests(unittest.TestCase):
 
 
 class UpstreamBalanceImplementationTests(unittest.TestCase):
+    def test_invalid_balance_config_is_not_silently_ignored(self):
+        from unittest.mock import patch
+
+        cfg = RecurConfig(
+            vocab_size=265, d_model=8, n_head=1, d_ff=16, block=8,
+            n_prelude=1, n_recur=1, n_coda=0, max_steps=1,
+            use_pool=True, pool_experts=4, pool_d_ff=8, pool_top_k=1,
+            pool_max=4,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            store.save(RecurCoder(cfg), tmp, step=0, val=1.0, cfg=cfg.__dict__)
+            for value in ("invalid", float("nan"), float("inf"), -0.001):
+                with self.subTest(value=value):
+                    config = {"pool": {"balance": value, "explore_bias": 0.0,
+                                       "explore_steps": 1000}}
+                    with patch("minagi.config.load", return_value=config):
+                        with self.assertRaises(ValueError):
+                            build_paged(tmp, torch.device("cpu"), resident=2,
+                                        ram_capacity=4)
+
     def _paged_model(self):
         cfg = RecurConfig(
             vocab_size=265, d_model=8, n_head=1, d_ff=16, block=8,
