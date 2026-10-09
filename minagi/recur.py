@@ -178,6 +178,13 @@ class RecurCoder(nn.Module):
         return torch.stack(t).mean() if t else torch.zeros(
             (), device=self.tok_emb.weight.device)
 
+    def pool_balance(self):
+        """Differentiable router-balance term from the current forward."""
+        fn = getattr(self.pool, "balance_term", None)
+        value = fn() if fn is not None else None
+        return value if value is not None else torch.zeros(
+            (), device=self.tok_emb.weight.device)
+
     def pool_dropped(self, reset=True):
         """
         Share of token-expert assignments the capacity bound discarded.

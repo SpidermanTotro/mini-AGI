@@ -61,6 +61,13 @@ class ConfigProfileTests(unittest.TestCase):
         self.assertEqual(get(settings, "pool.resident"), 32)
         self.assertEqual(get(settings, "model.context_end"), 8192)
 
+    def test_default_router_balance_is_off(self):
+        with patch.dict(os.environ, {
+            "GREENLIGHT_CONFIG": "", "MINI_AGI_CONFIG": ""}):
+            settings = load()
+        self.assertEqual(get(settings, "pool.balance"), 0.0)
+        self.assertGreater(get(settings, "pool.explore_bias"), 0.0)
+
     def test_legacy_config_environment_variable_remains_supported(self):
         with patch.dict(os.environ, {
                 "GREENLIGHT_CONFIG": "", "MINI_AGI_CONFIG": str(PROFILE)}):
