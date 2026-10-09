@@ -22,17 +22,29 @@ class PrepareBalanceABTests(unittest.TestCase):
             base = yaml.safe_load(Path(out["baseline"]["config"]).read_text())
             cand = yaml.safe_load(Path(out["candidate"]["config"]).read_text())
 
-            self.assertEqual(base["pool"]["explore_bias"], 0.65)
+            self.assertEqual(base["pool"]["explore_bias"], 0.0)
             self.assertEqual(base["pool"]["balance"], 0.0)
             self.assertEqual(cand["pool"]["explore_bias"], 0.0)
-            self.assertEqual(cand["pool"]["balance"], 3.5e-4)
+            self.assertEqual(cand["pool"]["balance"], 0.001)
 
-            for cfg in (base, cand):
-                cfg["pool"].pop("explore_bias")
-                cfg["pool"].pop("balance")
-            self.assertEqual(base, cand)
+            self.assertEqual(cand["pool"]["explore_bias"], base["pool"]["explore_bias"])
+            changed = [(section, key) for section in base
+                       for key in base[section] if isinstance(base[section], dict)
+                       and base[section][key] != cand[section][key]]
+            self.assertEqual(changed, [("pool", "balance")])
             self.assertEqual(out["baseline"]["command"].split(" ", 1)[1],
                              out["candidate"]["command"].split(" ", 1)[1])
+
+    def test_never_overwrites_frozen_profiles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.yaml"
+            source.write_text("pool:\\n  experts: 4\\n", encoding="utf-8")
+            out = Path(tmp) / "ab"
+            prepare(source, out, "python train.py stream corpus")
+            before = (out / "baseline.yaml").read_bytes()
+            with self.assertRaises(FileExistsError):
+                prepare(source, out, "python train.py stream corpus")
+            self.assertEqual((out / "baseline.yaml").read_bytes(), before)
 
     def test_rejects_config_without_pool_mapping(self):
         with tempfile.TemporaryDirectory() as tmp:
