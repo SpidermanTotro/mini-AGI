@@ -274,6 +274,11 @@ def cmd_stream(args):
                   f"{seen/el/1e3:.1f}k char/s{vram}{rp}", flush=True)
 
         if (step + 1) % args.eval_every == 0 or step + 1 == args.steps:
+            # Flush unsampled training routing before validation, so no
+            # training tokens disappear between log intervals.
+            prior_capacity = _balance_capacity_sample(model)
+            if prior_capacity.get("pool_requested", 0):
+                record("capacity", step=step, **prior_capacity)
             v = evaluator.run(args.eval_chunks)
             se = v.pop("stderr", 0.0)
             val = float(np.mean(list(v.values())))
