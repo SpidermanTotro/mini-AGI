@@ -1,7 +1,6 @@
 # Greenlight: deterministic expert-balance A/B promotion contract
 
-This document applies to the **experimental** `experiment/upstream-expert-balance`
-branch. It does not authorize enabling `pool.balance` on `main`.
+This document defines a **report-only** evaluation contract for the draft router-balance alternatives PR #25 and PR #33. It does **not** enable `pool.balance`, modify any training logic, or authorize promoting either candidate into `main`. Evidence from a real GPU A/B and independent cold checkpoint resume is still required.
 
 ## Controlled experiment
 

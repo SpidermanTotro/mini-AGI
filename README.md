@@ -1,8 +1,35 @@
 # Greenlight Recur
 
-**Greenlight Recur** is an experimental local AI research project derived from [volotat/mini-AGI](https://github.com/volotat/mini-AGI), focused on making mini-AGI easier to test, reproduce, harden, and run on consumer hardware.
+> **Greenlight R5 — active reliability hardening**
+>
+> Greenlight Recur is validating the complete continual-training lifecycle: train → checkpoint → terminate → rebuild model and optimiser → reload → resume → evaluate/generate. The R5 checkpoint/restart reliability gate was merged into `main` in [PR #30](https://github.com/SpidermanTotro/mini-AGI/pull/30) (commit [`f5f823d`](https://github.com/SpidermanTotro/mini-AGI/commit/f5f823d83d153dd49cd59b53b1bdfbc491e684dd)). Normal AdamW reload and paged expert/optimiser restart regressions are included. Hardware-specific resume and long-running continual-training claims still require reproducible validation.
+
+**Greenlight Recur** is an experimental, local-first AI research project derived from [volotat/mini-AGI](https://github.com/volotat/mini-AGI). It focuses on making mini-AGI easier to test, reproduce, harden, and run on consumer hardware while keeping failures visible instead of treating a green loss curve as proof that the whole training lifecycle works.
 
 The original mini-AGI architecture and research project are by its upstream author. Greenlight Recur builds on that work rather than claiming to replace it.
+
+## DragonForge mobile companions (early v0.1)
+
+Greenlight Recur remains the **Linux training and model-reliability core**. DragonForge adds read-only mobile companion scaffolds without changing model training or requiring cloud inference:
+
+- **Android:** [native companion](android/README.md) for local status and Training Doctor telemetry; Android build CI is available.
+- **iPhone:** [SwiftUI companion](mobile/README.md) in `iphone/DragonForge/`, using the same versioned `/api/v1` Linux protocol.
+- **Linux companion API:** `companion/server.py`, read-only and bound to `127.0.0.1` by default. Do not expose its unauthenticated telemetry on an untrusted network; secure pairing and remote training controls are not implemented.
+
+The mobile clients are experimental. The R5 cold-restart and optimizer-state reliability gates remain separate from mobile UI work.
+
+### Current Greenlight reliability gates
+
+| Gate | Status |
+|---|---|
+| Training Doctor and regression suite | **Available on `main`** |
+| Normal checkpoint → fresh model/AdamW → resume | **Regression merged in R5 / PR #30** |
+| Paged expert + optimiser checkpoint → reload → resume | **Regression merged in R5 / PR #30; hardware validation ongoing** |
+| Serving context / KV-cache rollover regression | **Covered** |
+| Upstream compatibility review | **Ongoing** |
+| AGI claim | **No — experimental research software** |
+
+R5 is intentionally reliability-first. Architecture and router experiments stay isolated until checkpoint/restart behaviour is trustworthy.
 
 ## Greenlight command line
 
