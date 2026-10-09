@@ -119,13 +119,14 @@ def build_report(history_path, expert_history_path, weights_dir, *,
     last_val = heldout[-1]
     heldout_loss = _finite(last_val["val"], "heldout loss")
 
-    expert_rows = read_history(expert_history_path)
+    # The streaming trainer can record validation + routing in the same
+    # history JSONL; skip unrelated step/save events, never fake use data.
+    expert_rows = [r for r in read_history(expert_history_path)
+                   if isinstance(r.get("use"), list) and r["use"]]
     if not expert_rows:
-        raise ValueError("expert history contains no records")
+        raise ValueError("expert history contains no real routing usage rows")
     recent = expert_rows[-1]
-    use = recent.get("use")
-    if not isinstance(use, list) or not use:
-        raise ValueError("latest expert history has no routing usage")
+    use = recent["use"]
     utilization = sum(_finite(x, "expert use") > 0 for x in use) / len(use)
     doctors = diagnose_experts(expert_rows)
     n = int(doctors.get("observations", {}).get("experts") or len(use))
