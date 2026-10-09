@@ -77,10 +77,20 @@ The reporter requires actual `kind=val` rows with a `val` held-out loss,
 expert routing usage history, and measured capacity-drop telemetry. It refuses
 to invent missing metrics or mistake training loss for held-out loss.
 
+For the `train.py stream` route in this experimental branch, use its
+`--out` directory's `history.jsonl` for **both** `--history` and
+`--expert-history`: training `step` records contain measured
+`pool_dropped`/`pool_requested`, and `val` records contain the actual
+`val` and per-expert `use` array. Evaluation-only routing counters are
+excluded from the next training interval. If logs are incomplete or the
+underlying model did not expose capacity counters, the reporter refuses to
+manufacture them. This is instrumentation for new runs; it cannot repair
+old logs.
+
 ```bash
 python tools/build_balance_ab_report.py \
   --history runs/baseline/history.jsonl \
-  --expert-history runs/baseline/expert_history.jsonl \
+  --expert-history runs/baseline/history.jsonl \
   --weights runs/baseline/restart-checkpoint \
   --initial-checkpoint checkpoints/frozen-start \
   --training-corpus data/train.txt \
