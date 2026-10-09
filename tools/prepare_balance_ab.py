@@ -10,6 +10,7 @@ import argparse
 import copy
 import hashlib
 import json
+import shlex
 from pathlib import Path
 
 import yaml
@@ -40,22 +41,41 @@ def prepare(source, out_dir, train_command):
     if not isinstance(pool, dict):
         raise ValueError("source config must contain a pool mapping")
 
-    if (out_dir / "manifest.json").exists():
-        raise FileExistsError("A/B manifest already exists; use a fresh output directory")
+    # train.py stream defaults --weights-dir to "weights", independently
+    # of the config. A command without explicit per-arm output paths could
+    # overwrite the same checkpoint twice and invalidate the experiment.
+    if ("--weights-dir {weights_dir}" not in train_command
+            or "--out {run_dir}" not in train_command):
+        raise ValueError(
+            "training command template requires "
+            "'--weights-dir {weights_dir} --out {run_dir}'")
+    names = ("baseline", "candidate")
+    targets = [out_dir / "manifest.json"]
+    for name in names:
+        targets += [out_dir / f"{name}.yaml",
+                    out_dir / name / "weights",
+                    out_dir / name / "runs"]
+    if any(path.exists() or path.is_symlink() for path in targets):
+        raise FileExistsError("A/B profiles/outputs already exist; use a fresh output directory")
+
     out_dir.mkdir(parents=True, exist_ok=True)
     generated = {}
     for name, routing in (("baseline", BASELINE), ("candidate", CANDIDATE)):
         profile = copy.deepcopy(cfg)
         profile["pool"].update(routing)
         path = out_dir / f"{name}.yaml"
-        if path.exists():
-            raise FileExistsError(f"refusing to overwrite frozen A/B profile: {path}")
+        weights_dir = out_dir / name / "weights"
+        run_dir = out_dir / name / "runs"
+        command = train_command.replace("{weights_dir}", shlex.quote(str(weights_dir)))
+        command = command.replace("{run_dir}", shlex.quote(str(run_dir)))
         path.write_text(yaml.safe_dump(profile, sort_keys=False))
         generated[name] = {
             "config": str(path),
             "config_sha256": _sha256(path),
             "routing": routing,
-            "command": f"GREENLIGHT_CONFIG={path} {train_command}",
+            "weights_dir": str(weights_dir),
+            "run_dir": str(run_dir),
+            "command": f"GREENLIGHT_CONFIG={shlex.quote(str(path))} {command}",
         }
 
     manifest = {
@@ -63,6 +83,7 @@ def prepare(source, out_dir, train_command):
         "source_config_sha256": _sha256(source),
         "rule": "same start checkpoint, corpus, seed, steps and command; only pool.balance differs",
         "production_reference": "R5 defaults may use explore_bias>0, which this two-arm trial does not evaluate",
+        "checkpoint_rule": "manually seed BOTH separate weights_dir paths from the SAME immutable checkpoint; this tool copies no files",
         "baseline": generated["baseline"],
         "candidate": generated["candidate"],
     }
@@ -76,7 +97,7 @@ def main():
     p.add_argument("--config", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--command", required=True,
-                   help="identical training command used for both arms")
+                   help="template with --weights-dir {weights_dir} and --out {run_dir}, never executed")
     args = p.parse_args()
     manifest = prepare(args.config, args.out, args.command)
     print(json.dumps(manifest, indent=2))
