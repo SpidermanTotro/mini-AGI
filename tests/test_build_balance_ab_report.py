@@ -89,6 +89,27 @@ class BuildBalanceABReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "held-out evaluation"):
             self.build()
 
+    def test_mixed_stream_history_uses_latest_real_validation_usage(self):
+        # Stream appends step, val, saved events to one history file.
+        self.write_history(
+            {"kind": "step", "step": 100, "pool_dropped": 2,
+             "pool_requested": 100},
+            {"kind": "val", "step": 100, "val": 0.75,
+             "use": [4, 0, 2, 1]},
+            {"kind": "saved", "step": 100},
+        )
+        report = self.build()
+        self.assertEqual(report["expert_utilization"], 0.75)
+        self.assertEqual(report["capacity_drop"], 0.02)
+
+    def test_stream_with_no_use_rows_is_not_reportable(self):
+        self.write_history({"kind": "step", "step": 100,
+                            "pool_dropped": 0, "pool_requested": 100},
+                           {"kind": "val", "step": 100, "val": 0.75})
+        self.experts.write_text(self.history.read_text())
+        with self.assertRaisesRegex(ValueError, "no real routing usage"):
+            self.build()
+
     def test_capacity_drop_without_denominator_fails_closed(self):
         self.write_history({"kind": "val", "val": 0.75},
                            {"kind": "step", "pool_dropped": 2})
