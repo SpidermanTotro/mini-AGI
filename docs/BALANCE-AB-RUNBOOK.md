@@ -81,10 +81,13 @@ For the `train.py stream` route in this experimental branch, use its
 `--out` directory's `history.jsonl` for **both** `--history` and
 `--expert-history`: training `step` records contain measured
 `pool_dropped`/`pool_requested`, and `val` records contain the actual
-`val` and per-expert `use` array. Evaluation-only routing counters are
-excluded from the next training interval. If logs are incomplete or the
-underlying model did not expose capacity counters, the reporter refuses to
-manufacture them. This is instrumentation for new runs; it cannot repair
+`val` and per-expert `use` array. At validation boundaries, remaining unsampled training routing
+is flushed as a separate `kind=capacity` event, while evaluation-only routing
+counters are excluded from the next training interval. The reporter aggregates
+all observed count windows by total `pool_requested`, rather than assuming the
+last interval represents the run. If logs are incomplete or the underlying
+model did not expose capacity counters, the reporter refuses to manufacture
+them. This is instrumentation for new runs; it cannot repair
 old logs.
 
 ```bash
