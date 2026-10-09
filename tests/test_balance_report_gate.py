@@ -80,10 +80,13 @@ class BalanceReportGateTests(unittest.TestCase):
         )
         for change in bad_reports:
             with self.subTest(change=change):
-                ok, _ = compare(sample(), sample(balance_strength=0.001,
-                                                 heldout_loss=0.69,
-                                                 expert_utilization=0.6,
-                                                 **change))
+                candidate_values = {
+                    "balance_strength": 0.001,
+                    "heldout_loss": 0.69,
+                    "expert_utilization": 0.6,
+                    **change,
+                }
+                ok, _ = compare(sample(), sample(**candidate_values))
                 self.assertFalse(ok)
         incomplete = sample()
         incomplete.pop("heldout_corpus_sha256")
