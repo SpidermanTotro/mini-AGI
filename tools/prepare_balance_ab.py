@@ -15,8 +15,11 @@ from pathlib import Path
 import yaml
 
 
-BASELINE = {"explore_bias": 0.65, "balance": 0.0}
-CANDIDATE = {"explore_bias": 0.0, "balance": 3.5e-4}
+# Both arms disable legacy exploration so the balance coefficient is the ONLY change.
+# This does not compare against the production R5 explore_bias=0.65 default;
+# that requires a separately declared reference arm.
+BASELINE = {"explore_bias": 0.0, "balance": 0.0}
+CANDIDATE = {"explore_bias": 0.0, "balance": 0.001}
 
 
 def _sha256(path):
@@ -37,12 +40,16 @@ def prepare(source, out_dir, train_command):
     if not isinstance(pool, dict):
         raise ValueError("source config must contain a pool mapping")
 
+    if (out_dir / "manifest.json").exists():
+        raise FileExistsError("A/B manifest already exists; use a fresh output directory")
     out_dir.mkdir(parents=True, exist_ok=True)
     generated = {}
     for name, routing in (("baseline", BASELINE), ("candidate", CANDIDATE)):
         profile = copy.deepcopy(cfg)
         profile["pool"].update(routing)
         path = out_dir / f"{name}.yaml"
+        if path.exists():
+            raise FileExistsError(f"refusing to overwrite frozen A/B profile: {path}")
         path.write_text(yaml.safe_dump(profile, sort_keys=False))
         generated[name] = {
             "config": str(path),
@@ -54,7 +61,8 @@ def prepare(source, out_dir, train_command):
     manifest = {
         "source_config": str(source),
         "source_config_sha256": _sha256(source),
-        "rule": "same start checkpoint, corpus, seed, steps and command; routing mode only",
+        "rule": "same start checkpoint, corpus, seed, steps and command; only pool.balance differs",
+        "production_reference": "R5 defaults may use explore_bias>0, which this two-arm trial does not evaluate",
         "baseline": generated["baseline"],
         "candidate": generated["candidate"],
     }
