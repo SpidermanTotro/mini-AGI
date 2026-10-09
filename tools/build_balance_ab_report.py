@@ -133,20 +133,34 @@ def build_report(history_path, expert_history_path, weights_dir, *,
     if n < 1 or n != len(use):
         raise ValueError("expert count and routing telemetry disagree")
 
-    # Capacity numbers MUST come from an actual measurement; no default 0.
-    capacity_rows = [r for r in rows
-                     if ("pool_dropped" in r or "capacity_drop" in r)]
+    # Weight measured capacity by actual token-expert requests across ALL
+    # training sample intervals. Using only the last interval silently loses
+    # earlier drops and may miscompare runs with different logging boundaries.
+    capacity_rows = [r for r in rows if ("pool_dropped" in r or
+                                         "capacity_drop" in r)]
     if not capacity_rows:
         raise ValueError("no measured capacity-drop telemetry")
-    latest = capacity_rows[-1]
-    if "pool_dropped" in latest:
-        dropped = _finite(latest["pool_dropped"], "pool_dropped")
-        requested = _finite(latest.get("pool_requested"), "pool_requested")
-        if requested <= 0 or dropped > requested:
-            raise ValueError("invalid drop/request counts")
-        capacity_drop = dropped / requested
+    count_rows = [r for r in capacity_rows if "pool_dropped" in r]
+    if count_rows:
+        if len(count_rows) != len(capacity_rows):
+            raise ValueError("cannot mix count-based and rate-only capacity windows")
+        drops = 0.0
+        requests = 0.0
+        for row in count_rows:
+            dropped = _finite(row["pool_dropped"], "pool_dropped")
+            requested = _finite(row.get("pool_requested"), "pool_requested")
+            if requested < dropped:
+                raise ValueError("invalid drop/request counts")
+            drops += dropped
+            requests += requested
+        if requests <= 0:
+            raise ValueError("capacity telemetry has no routed assignments")
+        capacity_drop = drops / requests
     else:
-        capacity_drop = _finite(latest["capacity_drop"], "capacity_drop", upper=1)
+        if len(capacity_rows) != 1:
+            raise ValueError("rate-only capacity windows need explicit count weights")
+        capacity_drop = _finite(capacity_rows[0]["capacity_drop"],
+                                "capacity_drop", upper=1)
 
     doctor = resume_preflight(weights_dir)
     preflight_passed = doctor.get("health") != "critical"
