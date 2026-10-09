@@ -339,6 +339,11 @@ class PagedPool(nn.Module):
                              persistent=False)
         self.explore_bias = 0.0          # the bonus at zero use, in logits
         self.explore_steps = 1000.0      # how far back `recent` looks
+        # Experimental upstream-style router balance. Default 0 preserves the
+        # R5 routing baseline exactly; when enabled it adds a differentiable
+        # penalty without changing admission or prune semantics.
+        self.balance = 0.0
+        self._balance = None
         self._bias = None
         self._exploring = False
         # what the router alone would have admitted this forward - the only
@@ -532,6 +537,7 @@ class PagedPool(nn.Module):
         self._voted = False
         self._mask = None
         self._bias = None
+        self._balance = None
         self._exploring = bool(explore and self.explore_bias > 0)
         if self._exploring:
             n = self._n
@@ -556,6 +562,23 @@ class PagedPool(nn.Module):
         a picked expert contributes.
         """
         return self._bias
+
+    def usage_share(self):
+        """Recent admission share for each expert, uniform before first use."""
+        n = self._n
+        r = self.recent[:n].float()
+        s = float(r.sum())
+        if s <= 0:
+            return torch.full((n,), 1.0 / max(n, 1), device=r.device)
+        return r / s
+
+    def note_balance(self, term):
+        """Record this forward's weighted differentiable router penalty."""
+        self._balance = term if self._balance is None else self._balance + term
+
+    def balance_term(self):
+        """This forward's experimental balance penalty, if one was computed."""
+        return self._balance
 
     def admitting(self):
         """Whether this forward may still admit experts."""

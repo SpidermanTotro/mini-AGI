@@ -831,6 +831,9 @@ def _cmd_read(args, dry_shadow=None):
         print(f"  while training, an expert used less than its fair share is "
               f"favoured when choosing: +{pool.explore_bias:g} at no use, "
               f"fading with use over ~{pool.explore_steps:g} steps")
+    if getattr(pool, "balance", 0) > 0:
+        print(f"  EXPERIMENT: router balance penalty {pool.balance:g}; "
+              f"expert selection remains deterministic")
 
     if args.no_pool_checkpoint:
         n_off = 0
@@ -2033,8 +2036,13 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
         _c = _load_cfg()
         pool.explore_bias = float(_get_cfg(_c, "pool.explore_bias", 0.0))
         pool.explore_steps = float(_get_cfg(_c, "pool.explore_steps", 1000))
-    except Exception:
+        pool.balance = float(_get_cfg(_c, "pool.balance", 0.0) or 0.0)
+    except (FileNotFoundError, KeyError):
+        # A missing optional profile may use defaults; invalid experiment
+        # settings must NEVER be silently treated as balance=0.
         pass
+    if not math.isfinite(pool.balance) or pool.balance < 0:
+        raise ValueError("pool.balance must be a finite nonnegative number")
     ever = cfgd.get("pool_ever")
     if ever:
         n = min(len(ever), pool.ever.numel())
