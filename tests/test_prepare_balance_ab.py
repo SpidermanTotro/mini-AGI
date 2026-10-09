@@ -38,7 +38,7 @@ class PrepareBalanceABTests(unittest.TestCase):
     def test_never_overwrites_frozen_profiles(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "source.yaml"
-            source.write_text("pool:\\n  experts: 4\\n", encoding="utf-8")
+            source.write_text("pool:\n  experts: 4\n", encoding="utf-8")
             out = Path(tmp) / "ab"
             prepare(source, out, "python train.py stream corpus")
             before = (out / "baseline.yaml").read_bytes()
