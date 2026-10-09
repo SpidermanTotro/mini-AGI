@@ -2037,8 +2037,12 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
         pool.explore_bias = float(_get_cfg(_c, "pool.explore_bias", 0.0))
         pool.explore_steps = float(_get_cfg(_c, "pool.explore_steps", 1000))
         pool.balance = float(_get_cfg(_c, "pool.balance", 0.0) or 0.0)
-    except Exception:
+    except (FileNotFoundError, KeyError):
+        # A missing optional profile may use defaults; invalid experiment
+        # settings must NEVER be silently treated as balance=0.
         pass
+    if not math.isfinite(pool.balance) or pool.balance < 0:
+        raise ValueError("pool.balance must be a finite nonnegative number")
     ever = cfgd.get("pool_ever")
     if ever:
         n = min(len(ever), pool.ever.numel())
