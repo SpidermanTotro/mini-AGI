@@ -27,12 +27,17 @@ candidate improves performance. PR #33 remains a competing design.
 python tools/prepare_balance_ab.py \
   --config config.yaml \
   --out runs/balance-ab/seed-42/profiles \
-  --command 'python train.py stream corpus'
+  --command 'python train.py stream --weights-dir {weights_dir} --out {run_dir}'
 ```
 
-This saves separate YAML profiles and a manifest, and refuses to overwrite
-existing outputs. Verify the actual `train.py` flags before using the command
-displayed in the manifest. Each arm needs its own checkpoint/output paths.
+This saves separate YAML profiles and a manifest with **different** per-arm
+`--weights-dir` and `--out` paths and refuses to overwrite existing outputs.
+The tool **does not create or seed checkpoint directories**. Manually clone
+the same immutable starting checkpoint into each displayed `weights_dir` before
+launching either command; otherwise the two runs would not have equal starts.
+Use the actual `train.py stream` flags and input mix supported by your checkout.
+Never execute a generated command until the starting checkpoint and corpus
+arguments have been independently checked.
 
 ## Independent cold restart proof
 
