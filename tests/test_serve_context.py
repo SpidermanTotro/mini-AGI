@@ -94,7 +94,11 @@ class ServeContextTest(unittest.TestCase):
         model = RecurCoder(cfg).eval()
         tokens = torch.tensor([[1, 2, 3, 4, 5, 6, 7, 8]])
 
-        full = model(tokens)[0][:, -1]
+        # Prefill uses the process compute precision. Compare against a
+        # full forward under the same autocast policy, not fp32 vs bf16.
+        from minagi.precision import amp
+        with amp(next(model.parameters()).device):
+            full = model(tokens)[0][:, -1]
         _, chunked, offset = serve._prefill_cache(model, tokens, chunk=3)
 
         torch.testing.assert_close(chunked[:, -1], full)
