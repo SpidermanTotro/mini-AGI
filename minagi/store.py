@@ -407,6 +407,7 @@ def _load_optim(opt, model, path):
     f = os.path.join(path, "optim.npz")
     if not os.path.exists(f):
         _stamp_missing_steps(opt)
+        validate_adamw_resume_state(opt)
         return
     z = np.load(f)
     name_of = {id(p): n for n, p in model.named_parameters()}
@@ -430,6 +431,7 @@ def _load_optim(opt, model, path):
                 # the parameter, not on the CPU where it was just loaded
                 st["step"] = torch.tensor(float(z[n + "|t"]), device=p.device)
     _stamp_missing_steps(opt)
+    validate_adamw_resume_state(opt)
 
 
 def _stamp_missing_steps(opt):
