@@ -1,30 +1,41 @@
-"""Minimal local terminal chat with explicit opt-in history.
+"""Opt-in local terminal chat using Ollama on loopback only.
 
-Uses the existing Greenlight Ollama chat backend through its documented CLI.
-Does not claim to load a Greenlight checkpoint or call cloud APIs.
+No cloud service, shell execution, or checkpoint mutation. This uses an
+installed Ollama model, not Greenlight's own checkpoint inference.
 """
 from __future__ import annotations
 
 import argparse
-import subprocess
-import sys
+import json
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from minagi.conversation_store import ConversationStore
 
 
+def ollama_reply(model: str, messages: list[dict], timeout: float = 120) -> str:
+    payload = json.dumps({"model": model, "messages": messages,
+                          "stream": False}).encode("utf-8")
+    request = urllib.request.Request(
+        "http://127.0.0.1:11434/api/chat", data=payload,
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        result = json.load(response)
+    answer = result.get("message", {}).get("content")
+    if not isinstance(answer, str):
+        raise ValueError("local Ollama returned no text response")
+    return answer
+
+
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Greenlight Next local chat")
+    parser = argparse.ArgumentParser(description="Greenlight Next local Ollama chat")
     parser.add_argument("--model", default="qwen3:8b")
-    parser.add_argument("--workspace", default=".")
     parser.add_argument("--db", required=True, help="Opt-in SQLite history path")
     parser.add_argument("--conversation", default="default")
     args = parser.parse_args(argv)
-    workspace = Path(args.workspace).resolve(strict=True)
-    if not workspace.is_dir():
-        parser.error("workspace must be a directory")
-    print("Greenlight Next local chat (Ollama backend). /quit to exit.")
-    with ConversationStore(args.db) as history:
+    print("Greenlight Next local chat (Ollama 127.0.0.1 only). /quit to exit.")
+    with ConversationStore(Path(args.db)) as history:
         while True:
             try:
                 prompt = input("you> ")
@@ -35,16 +46,19 @@ def main(argv=None) -> int:
                 return 0
             if not prompt.strip():
                 continue
-            # Existing chat CLI handles inference; no shell or remote execution.
-            # History is stored separately until a verified context-injection
-            # integration is implemented.
+            prior = history.history(args.conversation)
+            messages = [{"role": item["role"], "content": item["content"]}
+                        for item in prior if item["role"] in ("user", "assistant")]
+            messages.append({"role": "user", "content": prompt})
+            try:
+                reply = ollama_reply(args.model, messages)
+            except (urllib.error.URLError, TimeoutError, ValueError,
+                    json.JSONDecodeError) as exc:
+                print(f"Local inference failed (conversation unchanged): {exc}")
+                continue
             history.add(args.conversation, "user", prompt)
-            command = [sys.executable, "greenlight.py", "chat",
-                       "--model", args.model, "--workspace", str(workspace)]
-            print("This prototype stores history only. Use the existing chat "
-                  "command for model interaction:")
-            print(" ".join(command))
-            print("No model invocation performed in this prototype.")
+            history.add(args.conversation, "assistant", reply)
+            print(f"assistant> {reply}")
 
 
 if __name__ == "__main__":
