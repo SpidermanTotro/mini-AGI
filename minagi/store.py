@@ -446,13 +446,7 @@ def _stamp_missing_steps(opt):
     moments were written by the same Adam that had run that many steps.
     """
     counted = [float(st["step"]) for st in opt.state.values() if "step" in st]
-    orphaned = [p for group in opt.param_groups for p in group["params"]
-                if "exp_avg" in opt.state[p] and "step" not in opt.state[p]]
     if not counted:
-        if orphaned:
-            raise RuntimeError(
-                "cannot resume AdamW: restored moments have no step counters "
-                "to infer training history from; checkpoint left unchanged")
         return
     t = max(counted)
     for group in opt.param_groups:
@@ -460,6 +454,20 @@ def _stamp_missing_steps(opt):
             st = opt.state[p]
             if "exp_avg" in st and "step" not in st:
                 st["step"] = torch.tensor(t, device=p.device)
+
+
+def validate_adamw_resume_state(opt):
+    """Reject orphaned AdamW moments before stepping, without changing state.
+
+    Call this explicit preflight after checkpoint loading. Unlike
+    _stamp_missing_steps, it never infers an optimizer age or mutates state.
+    """
+    missing = [p for group in opt.param_groups for p in group["params"]
+               if "exp_avg" in opt.state[p] and "step" not in opt.state[p]]
+    if missing:
+        raise RuntimeError(
+            f"cannot resume AdamW: {len(missing)} parameters have restored "
+            "moments but no step counters; checkpoint left unchanged")
 
 
 def _load_expert_moments(opt, model, path):
