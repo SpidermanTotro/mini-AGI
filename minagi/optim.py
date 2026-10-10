@@ -33,10 +33,21 @@ class GradSNR:
 
     @torch.no_grad()
     def observe(self, params):
-        gs = [p.grad for p in params if p.grad is not None]
-        if not gs:
+        params = list(params)
+        if all(p.grad is None for p in params):
             return None
-        flat = torch.cat([g.detach().float().reshape(-1) for g in gs])
+        # A parameter that took no part in this step contributed nothing, and
+        # counts as a zero gradient rather than as a shorter vector. The
+        # halting head is one: a step whose sampled depth is a single pass
+        # forces that pass to stop and never reads it - a few in a million
+        # steps, and one of them landed on a reading here and stopped the run
+        # 346 minutes in (8,134,656 values against an average of 8,135,169).
+        flat = torch.cat([(p.grad if p.grad is not None else torch.zeros_like(p))
+                          .detach().float().reshape(-1) for p in params])
+        if self.m is not None and self.m.numel() != flat.numel():
+            # the set itself changed shape: a meter starts again, it does not
+            # stop the run it is only reporting on
+            self.m, self.sq, self.n = None, 0.0, 0
         self.m = flat.clone() if self.m is None else \
             self.m.mul_(self.beta).add_(flat, alpha=1 - self.beta)
         s = float((flat * flat).sum())

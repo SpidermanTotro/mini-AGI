@@ -40,11 +40,11 @@ point; a cosine can only ever go down.
             WHICH WAY IT MOVES (Plasticity.move). Up while held-out is still
             improving - slowly, in proportion to the evidence, from one
             standard error of improvement to T_MID, and faster above it. It
-            holds when held-out is flat. It comes down only when held-out is
-            measurably getting WORSE (below -T_HARM), and only once that has
-            been seen twice running; a back-off then pauses every increase for
-            COOL evaluations. So the rate keeps probing upward until a higher
-            one does harm. Each direction asks for evidence that has held: a
+            holds when held-out is flat - for a while; see SETTLING. It comes
+            down quickly only when held-out is measurably getting WORSE
+            (below -T_HARM), and only once that has been seen twice running;
+            a back-off then pauses every increase for COOL evaluations. So the
+            rate keeps probing upward until a higher one does harm. Each direction asks for evidence that has held: a
             rise is sized by the weakest of the last RISE_RUN verdicts, and
             harm needs the slow fit AND the fast one to say so - the verdict
             that sizes rises is pessimistic on purpose, and on a flat run its
@@ -54,11 +54,43 @@ point; a cosine can only ever go down.
             learning reads as weaker evidence, weaker evidence lowers the rate.
             The real run followed it from x0.38 to x0.05 while still improving.
 
+  SETTLING  held-out that has stopped improving in any way that matters, for
+            a long time -> ease the rate down, gently. "Stopped" is a SIZE:
+            the improvement the slow fit projects across its own window is
+            under E_STALE scatters - the same effect size the rises are sized
+            by, not the slow fit's t, which on the real log rated the
+            1,342-1,560M plateau +2 to +12 because a long enough window makes
+            any drift significant. That for STALE_RUN evaluations in a row,
+            six hours of rounds. Then every further such evaluation takes
+            SETTLE off the rate, about a fifth over a day of rounds, and
+            blocks rises for COOL_SETTLE evaluations: a lower rate buys
+            consolidation, which shows up as improvement, and that
+            improvement is no reason to raise the rate straight back.
+            This is not the easing described above. That one acted on WEAK
+            improvement, which a learning run always shows, and so ran the
+            rate down while the run was still learning. Replayed through this
+            rule, the real log eases nowhere before 1,400M characters, and a
+            run improving by 0.003 per 100M characters - well short of the
+            old pace of 0.005 - gets rises, not eases.
+            Measured before it was written: on the live run's plateau at
+            x0.058, the same weights read the same 3M characters at x0.02 and
+            came out ahead at every held-out check, by 0.002 to 0.005, and in
+            all eight subjects. Holding the rate on a plateau was leaving that
+            on the table - and the old floor of x0.05 forbade it.
+
   REGIME    held-out jumped by several standard errors and stayed there ->
             step the rate back up. New material, or a change of shape. It has
             to persist to count, so a single noisy evaluation cannot trigger
             it. This is the same detector `tools/plot_progress.py` uses to
             decide where to fit its trend.
+
+  RESTARTS  across one, only the trend carries over. A restart is where
+            settings change, and capacity_factor 0 moved held-out by 0.006
+            within one evaluation - which the fits took for a day of
+            improvement, and raised the rate for. So the first evaluation
+            after a restore re-levels both fits: every past reading is shifted
+            so the trend line runs through the new one, which keeps the slope
+            and the scatter and drops the step.
 
 TWO THINGS ARE NOT EVIDENCE, and both once drove the rate down by themselves:
 
@@ -86,7 +118,8 @@ def _sums():
 
 
 class Plasticity:
-    FLOOR = 0.05        # the rate is never allowed to reach zero
+    FLOOR = 0.01        # the rate is never allowed to reach zero. Not 0.05:
+                        # on the plateau x0.02 beat x0.058 (see SETTLING)
     CEIL = 1.0
     LAM = 0.97          # decay per evaluation; n_eff -> (1+L)/(1-L) = 65.7
     LAM_FAST = 0.85     # the second, shorter fit; n_eff -> 12.3. Not lower:
@@ -145,6 +178,17 @@ class Plasticity:
                         # and four in a row is a trend
     MIN_STEPS = 32      # optimiser steps since the last evaluation for a new
                         # one to count as evidence (a round reads ~400)
+    E_STALE = 1.0       # SETTLING: improvement the slow fit projects over its
+                        # own window, in units of the scatter, below which
+                        # the run is stale - SIZE, not significance: the slow
+                        # fit's t rated the 1,342-1,560M plateau +2 to +12
+    STALE_RUN = 36      # ...for this many evaluations in a row first: six
+                        # hours at a round every ten minutes
+    SETTLE = 0.002      # log-scale ease per stale evaluation after that:
+                        # -0.2%, about -25% over a day of ten-minute rounds
+    COOL_SETTLE = 36    # evaluations without a rise after an ease, so the
+                        # consolidation it buys cannot read as a reason to
+                        # raise the rate straight back
 
     def __init__(self, scale=1.0, best=None):
         self.scale = float(scale)
@@ -172,6 +216,8 @@ class Plasticity:
         self.recent = deque(maxlen=self.RISE_RUN)   # the last verdicts
         self.cool = 0                  # evaluations left without a rise
         self.seen_at = None            # self.step at the last evaluation taken
+        self.stale = 0                 # stale evaluations in a row (SETTLING)
+        self._resumed = False          # restored: re-level at the next reading
 
     # ---------------------------------------------------------------- lr
     def factor(self):
@@ -206,6 +252,27 @@ class Plasticity:
             S["xx"] += x * x
             S["xy"] += x * y
             S["yy"] += y * y
+
+    def _relevel(self, y):
+        """
+        Shift every past reading in both fits so the trend line passes
+        through `y`, read where the next evaluation will sit. Adding d to
+        every y leaves the slope and the residual scatter exactly as they
+        were; only the level moves. See RESTARTS.
+        """
+        x = self.i + 1.0
+        for S in (self.S, self.F):
+            w = S["w"]
+            if w <= 2:
+                continue
+            sxx = S["xx"] - S["x"] ** 2 / w
+            if sxx <= 0:
+                continue
+            slope = (S["xy"] - S["x"] * S["y"] / w) / sxx
+            d = y - (S["y"] / w + slope * (x - S["x"] / w))
+            S["yy"] += 2.0 * d * S["y"] + d * d * w
+            S["xy"] += d * S["x"]
+            S["y"] += d * w
 
     @staticmethod
     def _fit(S):
@@ -355,6 +422,11 @@ class Plasticity:
 
         self.seen_at = self.step
         self.prev = val
+        if self._resumed:
+            # the first evidence since a restore: a step here is a setting
+            # that changed, not learning (RESTARTS)
+            self._relevel(val)
+            self._resumed = False
         self._accumulate(val)
         t, n_eff, e = self._verdict()
         self.last_t = t
@@ -383,12 +455,25 @@ class Plasticity:
                 if self.cool > 0:               # after a back-off, no rise yet
                     self.cool -= 1
                     g = 0.0
+            # SETTLING: nothing above moved the rate, and for STALE_RUN
+            # evaluations running the slow fit has projected less than one
+            # scatter of improvement across its own window
+            eased = False
+            _, n_s, e_s = self._fit(self.S)
+            if g == 0.0 and self.harm == 0 and e_s * n_s < self.E_STALE:
+                self.stale += 1
+                if self.stale >= self.STALE_RUN and self.scale > self.FLOOR:
+                    g, eased = -self.SETTLE, True
+                    self.cool = max(self.cool, self.COOL_SETTLE)
+            else:
+                self.stale = 0
             self.scale = max(self.FLOOR, min(self.CEIL, self.scale * math.exp(g)))
             # One line per evaluation would be noise. Record only when the
             # rate has drifted a full 2% since the last thing recorded.
             last = self.events[-1]["scale"] if self.events else 1.0
             if abs(math.log(self.scale / max(last, 1e-9))) > 0.02:
-                kind = ("improving" if t > self.T_MID else
+                kind = ("stale" if eased else
+                        "improving" if t > self.T_MID else
                         "deteriorating" if t < -self.T_HARM else "settling")
                 note = (f"{kind}: t={t:+.2f} (effect {e:+.3f} per evaluation) "
                         f"over {n_eff:.0f} effective evaluations, rate "
@@ -405,7 +490,7 @@ class Plasticity:
                 "S": dict(self.S), "F": dict(self.F), "i": self.i,
                 "se": list(self.se_hist), "step": self.step,
                 "harm": self.harm, "cool": self.cool, "seen_at": self.seen_at,
-                "recent": list(self.recent),
+                "recent": list(self.recent), "stale": self.stale,
                 "jump_from": self.jump_from,
                 "n": round(n_eff, 1), "t": round(t, 3), "e": round(e, 4),
                 "events": self.events[-40:]}
@@ -442,16 +527,18 @@ class Plasticity:
         for v in d.get("recent") or []:
             p.recent.append(float(v))
         p.cool = int(d.get("cool", 0) or 0)
+        p.stale = int(d.get("stale", 0) or 0)
         p.seen_at = d.get("seen_at")
         p.jump_from = d.get("jump_from")
         for v in d.get("se") or []:
             p.se_hist.append(float(v))
         p.events = list(d.get("events") or [])
+        p._resumed = True                  # the next reading re-levels the fits
         return p
 
     def describe(self):
         s = self._se()
         head = (f"learning rate is governed by held-out, not by a horizon - up "
-                f"while it improves, down only when it worsens: "
-                f"rate x{self.scale:.3f}, floor x{self.FLOOR}")
+                f"while it improves, down when it worsens or stays flat for "
+                f"hours: rate x{self.scale:.3f}, floor x{self.FLOOR}")
         return head + (f", noise {s:.4f}" if s else "")
