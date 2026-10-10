@@ -407,6 +407,7 @@ def _load_optim(opt, model, path):
     f = os.path.join(path, "optim.npz")
     if not os.path.exists(f):
         _stamp_missing_steps(opt)
+        validate_adamw_resume_state(opt)
         return
     z = np.load(f)
     name_of = {id(p): n for n, p in model.named_parameters()}
@@ -430,6 +431,7 @@ def _load_optim(opt, model, path):
                 # the parameter, not on the CPU where it was just loaded
                 st["step"] = torch.tensor(float(z[n + "|t"]), device=p.device)
     _stamp_missing_steps(opt)
+    validate_adamw_resume_state(opt)
 
 
 def _stamp_missing_steps(opt):
@@ -454,6 +456,20 @@ def _stamp_missing_steps(opt):
             st = opt.state[p]
             if "exp_avg" in st and "step" not in st:
                 st["step"] = torch.tensor(t, device=p.device)
+
+
+def validate_adamw_resume_state(opt):
+    """Reject orphaned AdamW moments before stepping, without changing state.
+
+    Call this explicit preflight after checkpoint loading. Unlike
+    _stamp_missing_steps, it never infers an optimizer age or mutates state.
+    """
+    missing = [p for group in opt.param_groups for p in group["params"]
+               if "exp_avg" in opt.state[p] and "step" not in opt.state[p]]
+    if missing:
+        raise RuntimeError(
+            f"cannot resume AdamW: {len(missing)} parameters have restored "
+            "moments but no step counters; checkpoint left unchanged")
 
 
 def _load_expert_moments(opt, model, path):

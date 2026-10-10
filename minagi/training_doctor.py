@@ -255,8 +255,16 @@ def resume_preflight(weights_dir: str | Path, build=None) -> dict:
         # only the paged pool routes its slots through the optimiser's hooks;
         # the trainer's pool restores expert moments at load time instead
         pool.attach_optimiser(opt)
-    store.load(model, str(path), opt=opt, device=torch.device("cpu"))
-    store._load_optim(opt, model, str(path))
+    try:
+        store.load(model, str(path), opt=opt, device=torch.device("cpu"))
+        store._load_optim(opt, model, str(path))
+    except RuntimeError as exc:
+        if "cannot resume AdamW:" not in str(exc):
+            raise
+        return _preflight_report(path, manifest, findings + [Finding(
+            "MISSING_OPTIM_STEP", "critical",
+            "Checkpoint optimizer moments lack step counters; safe resume is blocked.",
+            {"error": str(exc)})], [], None)
     if hasattr(pool, "_own_moments"):
         # the pool fills its slots' moments just before a step, and an arriving
         # expert brings moments with no counter of its own
