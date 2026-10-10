@@ -446,7 +446,13 @@ def _stamp_missing_steps(opt):
     moments were written by the same Adam that had run that many steps.
     """
     counted = [float(st["step"]) for st in opt.state.values() if "step" in st]
+    orphaned = [p for group in opt.param_groups for p in group["params"]
+                if "exp_avg" in opt.state[p] and "step" not in opt.state[p]]
     if not counted:
+        if orphaned:
+            raise RuntimeError(
+                "cannot resume AdamW: restored moments have no step counters "
+                "to infer training history from; checkpoint left unchanged")
         return
     t = max(counted)
     for group in opt.param_groups:
