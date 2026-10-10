@@ -2,7 +2,7 @@
 import unittest
 
 import torch
-from minagi.store import _stamp_missing_steps
+from minagi.store import _stamp_missing_steps, validate_adamw_resume_state
 
 
 def make_optimizer():
@@ -24,8 +24,9 @@ class AdamWOrphanStepsTests(unittest.TestCase):
         opt, p, _ = make_optimizer()
         moments(opt, p)
         before = opt.state[p]["exp_avg"].clone()
+        _stamp_missing_steps(opt)  # Legacy behavior: no fabricated age.
         with self.assertRaisesRegex(RuntimeError, "no step counters"):
-            _stamp_missing_steps(opt)
+            validate_adamw_resume_state(opt)
         self.assertNotIn("step", opt.state[p])
         self.assertTrue(torch.equal(before, opt.state[p]["exp_avg"]))
 
@@ -34,11 +35,13 @@ class AdamWOrphanStepsTests(unittest.TestCase):
         moments(opt, p, step=12)
         moments(opt, q)
         _stamp_missing_steps(opt)
+        validate_adamw_resume_state(opt)
         self.assertEqual(float(opt.state[q]["step"]), 12.0)
 
     def test_empty_optimizer_state_is_valid(self):
         opt, p, q = make_optimizer()
         _stamp_missing_steps(opt)
+        validate_adamw_resume_state(opt)
         self.assertFalse(opt.state[p])
         self.assertFalse(opt.state[q])
 
@@ -47,6 +50,7 @@ class AdamWOrphanStepsTests(unittest.TestCase):
         moments(opt, p, step=4)
         moments(opt, q)
         _stamp_missing_steps(opt)
+        validate_adamw_resume_state(opt)
         p.grad = torch.ones_like(p)
         q.grad = torch.ones_like(q)
         opt.step()
