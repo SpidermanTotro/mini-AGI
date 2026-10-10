@@ -30,8 +30,18 @@ import threading
 import time
 
 # see train.py: the allocator reads this once at CUDA init, so it has to be
-# set before torch loads
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# set before torch loads - under the name this PyTorch reads (2.9 renamed it)
+def _alloc_var():
+    try:
+        from importlib.metadata import version
+        major, minor = (int(v) for v in version("torch").split(".")[:2])
+        return "PYTORCH_ALLOC_CONF" if (major, minor) >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
+    except Exception:                                      # noqa: BLE001
+        return "PYTORCH_CUDA_ALLOC_CONF"
+
+
+if not any(v in os.environ for v in ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF")):
+    os.environ[_alloc_var()] = "expandable_segments:True"
 
 import torch
 from flask import Flask, Response, jsonify, request
@@ -142,8 +152,9 @@ def load(weights, device=None, learn=True, lr=3e-4, save_every=8,
     # first question instead of nothing. It is one forward over the priming
     # text, which admits the experts that text asks for, as any forward does.
     if PRIME:
+        from minagi.precision import amp
         ids = STATE["tok"].encode(PRIME).ids[-model.cfg.block:]
-        with torch.no_grad():
+        with torch.no_grad(), amp(dev):
             model(torch.tensor([ids], device=dev))
 
     if learn:
@@ -238,6 +249,7 @@ def build_prompt(messages, budget, prime=""):
 
 def _prefill_cache(model, tokens, chunk=512):
     """Encode one self-contained window and return its cache and last logits."""
+    from minagi.precision import amp
     if tokens.shape[1] > model.cfg.block:
         raise ValueError("prefill exceeds the model context")
     caches = model.empty_caches()
@@ -246,7 +258,8 @@ def _prefill_cache(model, tokens, chunk=512):
     chunk = max(1, int(chunk))
     for i in range(0, tokens.shape[1], chunk):
         part = tokens[:, i:i + chunk]
-        logits = model(part, caches=caches, pos_offset=offset)[0]
+        with amp(next(model.parameters()).device):
+            logits = model(part, caches=caches, pos_offset=offset)[0]
         offset += part.shape[1]
     return caches, logits, offset
 
@@ -255,6 +268,7 @@ def _prefill_cache(model, tokens, chunk=512):
 def stream(prompt, max_new):
     from minagi.config import get as _g, load as _lc
     from minagi.decode import pick_next
+    from minagi.precision import amp
 
     c = _lc()
     strength = _g(c, "decoding.adapt_strength", 2.5)
@@ -262,7 +276,8 @@ def stream(prompt, max_new):
 
     model, tok = STATE["model"], STATE["tok"]
     device = next(model.parameters()).device
-    ids = tok.encode(prompt).ids[-model.cfg.block:]
+    block = model.cfg.block
+    ids = tok.encode(prompt).ids[-block:]
     out = torch.tensor([ids or [10]], device=device)
 
     # THE TEXT CHOOSES. The prompt is read in chunks, and each chunk adds its
@@ -282,7 +297,8 @@ def stream(prompt, max_new):
     # Prefill in chunks, the way training reads a corpus. Feeding a long
     # prompt in one pass materialises activations for every position across
     # every block application at once, which is what puts a long context out
-    # of reach; the cache carries the reach instead.
+    # of reach; the cache carries the reach instead. Every forward computes
+    # in the process-wide precision, as reading and model.generate do.
     caches, logits, offset = _prefill_cache(model, out)
 
     cur = out[:, -1:]
@@ -307,7 +323,8 @@ def stream(prompt, max_new):
                 caches, logits, offset = _prefill_cache(
                     model, recent)
             else:
-                logits = model(cur, caches=caches, pos_offset=offset)[0]
+                with amp(device):
+                    logits = model(cur, caches=caches, pos_offset=offset)[0]
                 offset += cur.shape[1]
             moved = getattr(pool, "loads", 0) - loads
             if moved:
@@ -860,9 +877,11 @@ def main():
     ap.add_argument("--save-every", type=int, default=8,
                     help="optimiser steps between writing the weights out")
     ap.add_argument("--precision", default=None,
-                    choices=["bf16", "fp16", "fp32"],
+                    choices=["bf16", "fp32"],
                     help="what the forward computes in; defaults to whatever "
-                         "config.yaml trains with")
+                         "config.yaml trains with. No fp16: the recurrent "
+                         "state reaches ~10,000 and RMSNorm squares it, past "
+                         "fp16's 65,504")
     args = ap.parse_args()
 
     from minagi.config import get as _g, load as _lc

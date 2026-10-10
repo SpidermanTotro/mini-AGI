@@ -178,6 +178,14 @@ class RecurCoder(nn.Module):
         return torch.stack(t).mean() if t else torch.zeros(
             (), device=self.tok_emb.weight.device)
 
+    def pool_balance(self):
+        """The balance term the last forward computed, already weighted
+        (PagedPool.note_balance) - zero when it computed none."""
+        t = getattr(self.pool, "balance_term", None)
+        v = t() if t is not None else None
+        return v if v is not None else torch.zeros(
+            (), device=self.tok_emb.weight.device)
+
     def pool_dropped(self, reset=True):
         """
         Share of token-expert assignments the capacity bound discarded.
@@ -287,9 +295,10 @@ class RecurCoder(nn.Module):
             # begins a new text, with an empty vote, and is what the prune
             # clock counts. See PagedPool.admit.
             #
-            # A forward that trains also explores: its selection favours the
-            # experts used least of late (PagedPool.begin_forward). Measuring
-            # and writing never do - they use the router's own choice.
+            # A forward that trains says so: it counts towards each expert's
+            # recent use and computes the balance term (PagedPool.note_balance).
+            # Choosing is the router's alone in every forward, so measuring and
+            # writing choose the way training does.
             explore = self.training and torch.is_grad_enabled()
             if caches is None or pos_offset == 0:
                 self.pool.begin_text(explore)
@@ -365,7 +374,15 @@ class RecurCoder(nn.Module):
                     and n < n_steps - cfg.bptt_window):
                 h = h.detach()
             active = (~halted).squeeze(-1) if freeze and n else None
-            if active is not None and not bool(active.any()):
+            if active is not None:
+                # one read-back settles the row: nobody left, everybody, or
+                # some. Only "some" needs the mask below - everybody runs as
+                # if there were none, so a reply's character, which is
+                # everybody until it halts, costs no more waits than that
+                live = int(active.sum())
+                if live == active.numel():
+                    active = None
+            if active is not None and live == 0:
                 # every character has halted. What is left is what the
                 # characters after them will read at this pass.
                 if caches is not None:
@@ -429,13 +446,14 @@ class RecurCoder(nn.Module):
                     halted_logits = logits_n.clone()
                     halted_hidden = yf.clone()
                     steps_used = torch.ones(B, T, device=x.device)
+                # unconditionally: where() with nothing newly halted changes
+                # nothing, and asking first would make the host wait
                 newly = (~halted) & ((1.0 - cum) >= cfg.halt_thresh)
-                if bool(newly.any()):
-                    halted_logits = torch.where(newly, logits_n, halted_logits)
-                    halted_hidden = torch.where(newly, yf, halted_hidden)
-                    steps_used = torch.where(
-                        newly.squeeze(-1),
-                        torch.full_like(steps_used, float(n + 1)), steps_used)
+                halted_logits = torch.where(newly, logits_n, halted_logits)
+                halted_hidden = torch.where(newly, yf, halted_hidden)
+                steps_used = torch.where(
+                    newly.squeeze(-1),
+                    torch.full_like(steps_used, float(n + 1)), steps_used)
                 halted = halted | newly
             if collect:
                 per_step.append({"step": n + 1,
@@ -463,7 +481,7 @@ class RecurCoder(nn.Module):
         loss = loss + cfg.ponder_beta * kl.mean()
         steps = (P * torch.arange(1, len(p_terms) + 1, device=x.device)
                  .view(-1, 1, 1)).sum(0)
-        self.last_steps = steps.mean().detach().item()
+        self.last_steps = float(steps.mean().detach())
         # logits are the halting-weighted mixture, so top-1 accuracy measured
         # downstream reflects what the model would actually have emitted
         if return_hidden:

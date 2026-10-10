@@ -37,7 +37,19 @@ from dataclasses import asdict
 # MiB free and 861 MiB reserved but unallocated. There was plenty of memory;
 # there was no contiguous piece of it. Set it here rather than in a shell so it
 # is a property of the program, not of how it happened to be launched.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# PyTorch 2.9 renamed the variable and warns about the old name; earlier
+# versions read only the old one.
+def _alloc_var():
+    try:
+        from importlib.metadata import version
+        major, minor = (int(v) for v in version("torch").split(".")[:2])
+        return "PYTORCH_ALLOC_CONF" if (major, minor) >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
+    except Exception:                                      # noqa: BLE001
+        return "PYTORCH_CUDA_ALLOC_CONF"
+
+
+if not any(v in os.environ for v in ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF")):
+    os.environ[_alloc_var()] = "expandable_segments:True"
 
 import numpy as np
 import torch
@@ -676,7 +688,8 @@ def _cmd_read(args, dry_shadow=None):
     print(f"  {pool.n_experts()} experts on disk, {pool.n_resident()} resident, "
           f"{pool.vram_params()/1e6:.1f}M in VRAM of "
           f"{pool.n_params()/1e6:.1f}M total")
-    print(f"  computing in {args.precision}; weights stay fp32 everywhere, "
+    from minagi.precision import describe
+    print(f"  computing in {describe(device)}; weights stay fp32 everywhere, "
           f"Adam's moments store as bf16")
     # dwell is configured in characters and counted in segments, one per
     # working-set decision, which is one per chunk
@@ -824,13 +837,22 @@ def _cmd_read(args, dry_shadow=None):
                  f"writing alike." if cfg.halt_freeze else
                  f"Inference still runs all {cfg.max_steps} and lets halting "
                  f"decide which row each character keeps."))
-    print(f"  every character ranks all {pool.n_experts()} experts and asks for "
-          f"its top {cfg.pool_top_k}; each forward uses the "
-          f"{pool.n_resident()} it asks for most")
-    if getattr(pool, "explore_bias", 0) > 0:
-        print(f"  while training, an expert used less than its fair share is "
-              f"favoured when choosing: +{pool.explore_bias:g} at no use, "
-              f"fading with use over ~{pool.explore_steps:g} steps")
+    _temp = float(getattr(pool, "select_temperature", 0.0) or 0.0)
+    if _temp > 0:
+        print(f"  experts are DRAWN at selection temperature {_temp:g}: each row "
+              f"draws {cfg.pool_top_k} from the text's probabilities until the "
+              f"{pool.n_resident()} slots are full, and every character draws "
+              f"its {cfg.pool_top_k} from its own - the text itself is always "
+              f"read and written greedily")
+    else:
+        print(f"  every character ranks all {pool.n_experts()} experts and asks "
+              f"for its top {cfg.pool_top_k}; each forward uses the "
+              f"{pool.n_resident()} its text asks for most")
+    if getattr(pool, "balance", 0) > 0:
+        print(f"  while training, the router pays for the probability it puts "
+              f"on each expert in proportion to that expert's share of recent "
+              f"admissions (balance {pool.balance:g}), so the whole pool gets "
+              f"used")
 
     if args.no_pool_checkpoint:
         n_off = 0
@@ -2025,14 +2047,16 @@ def build_paged(wdir, device, resident=None, ram_capacity=256, ceiling=None,
     model.pool = pool
     pool.attach_sites(model)
     pool.load_telemetry(man.get("telemetry"))
-    # Exploration while training - see PagedPool.begin_forward. Read from
-    # config.yaml at every load, like the capacity bound: it is a choice about
-    # how the model trains, not a property of its weights.
+    # The balance term's weight and the temperature of expert selection - see
+    # PagedPool.note_balance and PagedPool._draw. Read from config.yaml at
+    # every load, like the capacity bound: they are choices about how the model
+    # trains and chooses, not properties of its weights.
     try:
         from minagi.config import load as _load_cfg, get as _get_cfg
         _c = _load_cfg()
-        pool.explore_bias = float(_get_cfg(_c, "pool.explore_bias", 0.0))
-        pool.explore_steps = float(_get_cfg(_c, "pool.explore_steps", 1000))
+        pool.balance = float(_get_cfg(_c, "pool.balance", 0.0) or 0.0)
+        pool.select_temperature = float(
+            _get_cfg(_c, "pool.select_temperature", 0.0) or 0.0)
     except Exception:
         pass
     ever = cfgd.get("pool_ever")

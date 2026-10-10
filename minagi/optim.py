@@ -43,7 +43,10 @@ class GradSNR:
         # Recurrence and conditional paths can change which parameters receive
         # gradients from one step to the next.  An EMA only has meaning while
         # its coordinates describe the same parameters, so start a new window
-        # whenever that active set changes.
+        # whenever that active set changes.  Upstream hit the same wall from
+        # the halting head - a few in a million steps, one of which stopped a
+        # run 346 minutes in.  The signature covers both that and any swap of
+        # equally sized parameters, which a length check alone would miss.
         if self.m is None or signature != self._grad_signature:
             self.m = flat.clone()
             self.sq = float((flat * flat).sum())
@@ -61,5 +64,9 @@ class GradSNR:
         """0 = pure noise, 1 = every step pointing the same way."""
         if self.m is None or self.sq <= 0 or self.n < 8:
             return None
-        c = 1 - self.beta ** self.n                  # bias correction
-        return float((self.m / c).pow(2).sum() / (self.sq / c))
+        # No bias correction: both averages start at the first reading, not
+        # at zero, so neither is biased toward zero. Dividing by 1 - beta^n
+        # here inflated the ratio by that factor - 6.7x at the eighth reading,
+        # and a constant gradient read above one. (from mini-AGI PR #28,
+        # still open upstream at the time of this integration)
+        return float(self.m.pow(2).sum() / self.sq)
